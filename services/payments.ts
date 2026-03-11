@@ -33,12 +33,16 @@ export async function addPayment(form: AddPaymentForm): Promise<Payment> {
 
 // ============================================================
 // FETCH PAYMENTS (with customer data)
+// NOTE: paid_amount and pending_amount are NOT stored columns —
+// they are computed here by summing all payments per customer.
 // ============================================================
 export async function fetchPayments(
   filters?: PaymentFilters
 ): Promise<PaymentWithCustomer[]> {
   const supabase = getSupabaseClient()
 
+  // Step 1: Fetch the filtered payments with customer join
+  // (only select columns that actually exist on the customers table)
   let query = supabase
     .from('payments')
     .select(`
@@ -47,9 +51,7 @@ export async function fetchPayments(
         name,
         phone,
         daily_amount,
-        pending_amount,
-        total_amount,
-        paid_amount
+        total_amount
       )
     `)
     .order('created_at', { ascending: false })
@@ -68,7 +70,49 @@ export async function fetchPayments(
 
   const { data, error } = await query
   if (error) throw new Error(error.message)
-  return (data as PaymentWithCustomer[]) || []
+
+  const payments = (data ?? []) as Array<
+    Payment & { customers: { name: string; phone: string; daily_amount: number; total_amount: number } | null }
+  >
+
+  if (payments.length === 0) return []
+
+  // Step 2: Get every unique customer_id from the result set
+  const customerIds = [...new Set(payments.map((p) => p.customer_id))]
+
+  // Step 3: Sum ALL historical payments for those customers
+  // (not just today's — we need lifetime paid to compute balance)
+  const { data: allPaid, error: paidError } = await supabase
+    .from('payments')
+    .select('customer_id, amount')
+    .in('customer_id', customerIds)
+
+  if (paidError) throw new Error(paidError.message)
+
+  // Step 4: Build a map of customer_id → total paid (lifetime)
+  const paidMap: Record<string, number> = {}
+  for (const p of allPaid ?? []) {
+    paidMap[p.customer_id] = (paidMap[p.customer_id] ?? 0) + Number(p.amount)
+  }
+
+  // Step 5: Attach computed paid_amount & pending_amount to each payment row
+  return payments.map((p) => {
+    const totalAmount = Number(p.customers?.total_amount ?? 0)
+    const paidAmount  = paidMap[p.customer_id] ?? 0
+    const pending     = Math.max(0, totalAmount - paidAmount)
+
+    return {
+      ...p,
+      customers: {
+        name:           p.customers?.name    ?? 'Unknown',
+        phone:          p.customers?.phone   ?? '-',
+        daily_amount:   p.customers?.daily_amount ?? 0,
+        total_amount:   totalAmount,
+        paid_amount:    paidAmount,
+        pending_amount: pending,
+      },
+    } as PaymentWithCustomer
+  })
 }
 
 // ============================================================
@@ -118,7 +162,7 @@ export async function fetchDashboardStats(date: string): Promise<DashboardStats>
 
   if (p2) throw new Error(p2.message)
 
-  const payments = todayPayments || []
+  const payments  = todayPayments  || []
   const customers = activeCustomers || []
 
   const total_collected_today = payments.reduce((s, p) => s + p.amount, 0)
@@ -129,8 +173,8 @@ export async function fetchDashboardStats(date: string): Promise<DashboardStats>
     .filter((p) => p.method === 'upi')
     .reduce((s, p) => s + p.amount, 0)
 
-  const paid_customer_ids = new Set(payments.map((p) => p.customer_id))
-  const customers_paid_today = paid_customer_ids.size
+  const paid_customer_ids     = new Set(payments.map((p) => p.customer_id))
+  const customers_paid_today  = paid_customer_ids.size
   const customers_pending_today = customers.filter(
     (c) => !paid_customer_ids.has(c.id)
   ).length
