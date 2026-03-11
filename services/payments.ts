@@ -46,7 +46,10 @@ export async function fetchPayments(
       customers (
         name,
         phone,
-        daily_amount
+        daily_amount,
+        pending_amount,
+        total_amount,
+        paid_amount
       )
     `)
     .order('created_at', { ascending: false })

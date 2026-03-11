@@ -1,103 +1,17 @@
 /**
  * generateDailyPDFReport.ts
  *
- * ─── IMPORTANT — UPDATE YOUR PAYMENTS QUERY FIRST ──────────────────────────
- * Wherever you fetch today's payments, make sure the customers join includes
- * pending_amount, total_amount and paid_amount, e.g.:
- *
- *   .select('*, customers(name, phone, daily_amount, pending_amount, total_amount, paid_amount)')
- *
- * Without this the balance will never appear in the PDF.
- * ────────────────────────────────────────────────────────────────────────────
- *
  * USAGE:
  *   import { generateDailyPDFReport } from './generateDailyPDFReport'
  *   await generateDailyPDFReport(supabase, date, payments, 'My Business')
+ *
+ * NOTE: payments must be fetched via fetchPayments() from payments.ts
+ * which now includes pending_amount, total_amount, paid_amount in the join.
  */
 
 import dayjs from 'dayjs'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { PaymentWithCustomer } from '@/types'
-
-// ─────────────────────────────────────────────────────────────
-// Build balance map — tries 3 sources in order:
-//   1. p.customers.pending_amount  (from the join — FREE, instant)
-//   2. p.customers.total_amount - p.customers.paid_amount  (computed from join)
-//   3. Direct DB fetch as absolute last resort
-// ─────────────────────────────────────────────────────────────
-export async function computeBalances(
-  supabase: SupabaseClient,
-  payments: PaymentWithCustomer[]
-): Promise<Record<string, number>> {
-  const balanceMap: Record<string, number> = {}
-  const needsDB: string[] = []
-
-  for (const p of payments) {
-    if (p.customer_id in balanceMap) continue
-
-    // Cast to any so we can read fields that may not be in the TS type yet
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const c = p.customers as any
-
-    if (c?.pending_amount != null) {
-      // ✅ Source 1: pending_amount came with the join
-      balanceMap[p.customer_id] = Math.max(0, Number(c.pending_amount))
-      console.log(`[balance] JOIN pending_amount  ${p.customer_id} → ${balanceMap[p.customer_id]}`)
-    } else if (c?.total_amount != null) {
-      // ✅ Source 2: compute from total_amount - paid_amount in the join
-      const total = Number(c.total_amount ?? 0)
-      const paid  = Number(c.paid_amount  ?? 0)
-      balanceMap[p.customer_id] = Math.max(0, total - paid)
-      console.log(`[balance] JOIN computed        ${p.customer_id} → ${balanceMap[p.customer_id]}`)
-    } else {
-      // ⚠️ Source 3: must fetch from DB
-      needsDB.push(p.customer_id)
-      console.warn(`[balance] JOIN missing — will fetch from DB: ${p.customer_id}`)
-    }
-  }
-
-  // Source 3: DB fetch for anything still missing
-  if (needsDB.length > 0) {
-    console.log('[balance] DB fetch for:', needsDB)
-
-    const { data, error } = await supabase
-      .from('customers')
-      .select('id, pending_amount, total_amount, paid_amount')
-      .in('id', needsDB)
-
-    if (error) {
-      console.error('[balance] DB fetch FAILED:', error.message, error.details)
-    } else {
-      console.log('[balance] DB returned rows:', data?.length ?? 0, JSON.stringify(data))
-    }
-
-    for (const row of data ?? []) {
-      if (row.pending_amount != null) {
-        balanceMap[row.id] = Math.max(0, Number(row.pending_amount))
-        console.log(`[balance] DB pending_amount   ${row.id} → ${balanceMap[row.id]}`)
-      } else if (row.total_amount != null) {
-        const total = Number(row.total_amount ?? 0)
-        const paid  = Number(row.paid_amount  ?? 0)
-        balanceMap[row.id] = Math.max(0, total - paid)
-        console.log(`[balance] DB computed          ${row.id} → ${balanceMap[row.id]}`)
-      } else {
-        balanceMap[row.id] = 0
-        console.error(`[balance] DB row has NO balance fields at all for ${row.id}`)
-      }
-    }
-  }
-
-  // Final safety — anything still missing → 0
-  for (const p of payments) {
-    if (!(p.customer_id in balanceMap)) {
-      balanceMap[p.customer_id] = 0
-      console.error(`[balance] GIVING UP — no balance found for ${p.customer_id}`)
-    }
-  }
-
-  console.log('[balance] ✅ Final map:', JSON.stringify(balanceMap))
-  return balanceMap
-}
 
 // ─────────────────────────────────────────────────────────────
 // Helpers
@@ -114,20 +28,44 @@ function fmtBox(value: number): string {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Get pending balance for a payment's customer.
+// Reads directly from the already-joined customers data.
+// ─────────────────────────────────────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getPending(p: PaymentWithCustomer): number {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const c = p.customers as any
+  if (c == null) return 0
+
+  // Priority 1: pending_amount stored on customer row
+  if (c.pending_amount != null) return Math.max(0, Number(c.pending_amount))
+
+  // Priority 2: compute from total_amount - paid_amount
+  if (c.total_amount != null) {
+    return Math.max(0, Number(c.total_amount) - Number(c.paid_amount ?? 0))
+  }
+
+  return 0
+}
+
+// ─────────────────────────────────────────────────────────────
 // Generate the PDF
 // ─────────────────────────────────────────────────────────────
 export async function generateDailyPDFReport(
-  supabase: SupabaseClient,
+  _supabase: SupabaseClient,   // kept for API compatibility, no longer needed
   date: string,
   payments: PaymentWithCustomer[],
   businessName: string = 'FinTrack Business'
 ) {
-  console.log('[PDF] payments count:', payments.length)
-  if (payments[0]) {
-    console.log('[PDF] sample payment customers fields:', JSON.stringify(payments[0].customers))
+  // Build balance map directly from joined data — no extra DB call needed
+  const balances: Record<string, number> = {}
+  for (const p of payments) {
+    if (!(p.customer_id in balances)) {
+      balances[p.customer_id] = getPending(p)
+    }
   }
 
-  const balances = await computeBalances(supabase, payments)
+  console.log('[PDF] balances from join:', JSON.stringify(balances))
 
   const { jsPDF } = await import('jspdf')
 
