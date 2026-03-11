@@ -1,14 +1,16 @@
 /**
  * generateDailyPDFReport.ts
  *
- * ⚠️  FOR CORRECT BALANCE: update your Supabase fetch to:
- *     .from('payments').select('*, customers:customer_summary(*)')
+ * Call it like this from your page/component:
  *
- * Even if you haven't done that yet, this file now computes balance
- * from whatever fields ARE available in the raw customers table.
+ *   await generateDailyPDFReport(supabase, date, payments, 'My Business')
+ *
+ * The function fetches customer_summary balances internally using the
+ * supabase client you pass — no query changes needed on your end.
  */
 
 import dayjs from 'dayjs'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import type { PaymentWithCustomer } from '@/types'
 
 function fmt(value: number): string {
@@ -22,71 +24,49 @@ function fmtBox(value: number): string {
   return `Rs. ${fmt(value)}`
 }
 
-/**
- * Extracts the pending/balance amount from a customer record.
- *
- * Tries every possible field in order:
- *  1. pending_amount       → from customer_summary VIEW  ✅ most accurate
- *  2. total_amount - paid_amount → also from VIEW        ✅ accurate
- *  3. total_amount alone   → from raw customers table    ⚠️  shows full loan, not remaining
- *  4. loan_amount + interest → from raw customers table  ⚠️  same as above
- *
- * Logs what it finds so you can debug in the browser console.
- */
-function getPending(customers: unknown, paymentAmount: number): number {
-  if (!customers || typeof customers !== 'object') {
-    console.warn('[PDF] customers field is null/undefined — balance will show 0')
-    return 0
-  }
-
-  const c = customers as Record<string, unknown>
-
-  // Debug: log all available keys so you can see what Supabase returned
-  console.log('[PDF] customers fields available:', Object.keys(c))
-  console.log('[PDF] customers data:', JSON.stringify(c, null, 2))
-
-  // 1. pending_amount from customer_summary view
-  const pendingAmount = Number(c['pending_amount'])
-  if (!isNaN(pendingAmount) && pendingAmount >= 0) {
-    console.log('[PDF] Using pending_amount:', pendingAmount)
-    return pendingAmount
-  }
-
-  // 2. total_amount - paid_amount (both from customer_summary view)
-  const totalAmount = Number(c['total_amount'])
-  const paidAmount  = Number(c['paid_amount'])
-  if (!isNaN(totalAmount) && totalAmount > 0 && !isNaN(paidAmount)) {
-    const computed = Math.max(0, totalAmount - paidAmount)
-    console.log('[PDF] Using total_amount - paid_amount:', computed)
-    return computed
-  }
-
-  // 3. total_amount alone (raw customers table has this)
-  if (!isNaN(totalAmount) && totalAmount > 0) {
-    console.log('[PDF] Using total_amount (no paid_amount available):', totalAmount)
-    return totalAmount
-  }
-
-  // 4. loan_amount + interest (raw customers table)
-  const loanAmount = Number(c['loan_amount'])
-  const interest   = Number(c['interest'])
-  if (!isNaN(loanAmount) && loanAmount > 0) {
-    const total = loanAmount + (isNaN(interest) ? 0 : interest)
-    console.log('[PDF] Using loan_amount + interest:', total)
-    return total
-  }
-
-  console.warn('[PDF] Could not compute balance — no usable fields found')
-  return 0
-}
-
 export async function generateDailyPDFReport(
+  supabase: SupabaseClient,
   date: string,
   payments: PaymentWithCustomer[],
   businessName: string = 'FinTrack Business'
 ) {
   const { jsPDF } = await import('jspdf')
 
+  // ── FETCH BALANCES from customer_summary view ──────────────
+  // Get all unique customer IDs from today's payments
+  const customerIds = [...new Set(payments.map((p) => p.customer_id))]
+
+  // Query the customer_summary VIEW directly — this has pending_amount
+  const { data: summaries, error } = await supabase
+    .from('customer_summary')
+    .select('id, total_amount, paid_amount, pending_amount')
+    .in('id', customerIds)
+
+  if (error) {
+    console.error('[PDF] Failed to fetch customer_summary:', error.message)
+  }
+
+  // Build a map: customer_id → pending_amount
+  const pendingMap: Record<string, number> = {}
+  if (summaries) {
+    for (const s of summaries) {
+      pendingMap[s.id] = Number(s.pending_amount ?? 0)
+    }
+  }
+
+  // Fallback: if customer_summary failed, use total_amount from payment's customers field
+  for (const p of payments) {
+    if (pendingMap[p.customer_id] === undefined) {
+      const c = p.customers as unknown as Record<string, unknown>
+      const total    = Number(c?.['total_amount']  ?? 0)
+      const interest = Number(c?.['interest']      ?? 0)
+      const loan     = Number(c?.['loan_amount']   ?? 0)
+      // Use whichever field is available
+      pendingMap[p.customer_id] = total > 0 ? total : (loan + interest)
+    }
+  }
+
+  // ── SETUP ──────────────────────────────────────────────────
   const doc       = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
   const pageWidth = doc.internal.pageSize.getWidth()
   const pageH     = doc.internal.pageSize.getHeight()
@@ -111,17 +91,13 @@ export async function generateDailyPDFReport(
   const upiTotal   = payments.filter((p) => p.method === 'upi') .reduce((s, p) => s + Number(p.amount), 0)
   const grandTotal = cashTotal + upiTotal
 
-  // Log the raw first payment so you can see what's coming from Supabase
-  if (payments.length > 0) {
-    console.log('[PDF] First payment object:', JSON.stringify(payments[0], null, 2))
-  }
-
+  // Total balance = sum of pending for each unique customer
   const seenIds = new Set<string>()
   let totalPending = 0
   for (const p of payments) {
     if (!seenIds.has(p.customer_id)) {
       seenIds.add(p.customer_id)
-      totalPending += getPending(p.customers, Number(p.amount))
+      totalPending += pendingMap[p.customer_id] ?? 0
     }
   }
 
@@ -258,7 +234,7 @@ export async function generateDailyPDFReport(
       curY += HEAD_H
     }
 
-    const pending = getPending(p.customers, Number(p.amount))
+    const pending = pendingMap[p.customer_id] ?? 0
     const isEven  = i % 2 === 1
     const rowBg: RGB = isEven ? [248, 250, 252] : [255, 255, 255]
 
