@@ -7,34 +7,40 @@ export async function generateDailyPDFReport(
   payments: PaymentWithCustomer[],
   businessName: string = 'FinTrack Business'
 ) {
-  // ── IMPORTS ────────────────────────────────────────────────
-  const { jsPDF } = await import('jspdf')
-  // jspdf-autotable patches the jsPDF prototype at import time
-  await import('jspdf-autotable')
+  // ── SAFE DYNAMIC IMPORTS ───────────────────────────────────
+  let jsPDFClass: typeof import('jspdf')['jsPDF']
+  let autoTableFn: typeof import('jspdf-autotable')['default']
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const autoTable = (d: any, opts: any) => (d as any).autoTable(opts)
+  try {
+    const jspdfModule      = await import('jspdf')
+    const autoTableModule  = await import('jspdf-autotable')
+    jsPDFClass   = jspdfModule.jsPDF
+    autoTableFn  = autoTableModule.default
+  } catch (err) {
+    console.error('[PDF] Failed to load jspdf or jspdf-autotable:', err)
+    throw new Error('PDF library failed to load. Please refresh and try again.')
+  }
 
-  const doc       = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+  // ── SETUP ──────────────────────────────────────────────────
+  const doc       = new jsPDFClass({ orientation: 'portrait', unit: 'mm', format: 'a4' })
   const pageWidth = doc.internal.pageSize.getWidth()   // 210 mm
   const pageH     = doc.internal.pageSize.getHeight()  // 297 mm
 
   type RGB = [number, number, number]
 
   // ── CALCULATIONS ───────────────────────────────────────────
-  const cashTotal  = payments.filter((p) => p.method === 'cash').reduce((s, p) => s + p.amount, 0)
-  const upiTotal   = payments.filter((p) => p.method === 'upi') .reduce((s, p) => s + p.amount, 0)
+  const cashTotal  = payments.filter((p) => p.method === 'cash').reduce((s, p) => s + Number(p.amount), 0)
+  const upiTotal   = payments.filter((p) => p.method === 'upi') .reduce((s, p) => s + Number(p.amount), 0)
   const grandTotal = cashTotal + upiTotal
 
-  // pending_amount comes from the customer_summary view joined in your Supabase query
+  // Sum pending_amount per unique customer (comes from customer_summary view)
   const seenCustomers = new Set<string>()
   let totalPending = 0
   for (const p of payments) {
     if (!seenCustomers.has(p.customer_id)) {
       seenCustomers.add(p.customer_id)
-      const pending =
-        (p.customers as unknown as { pending_amount?: number })?.pending_amount ?? 0
-      totalPending += pending
+      const c = p.customers as unknown as Record<string, unknown>
+      totalPending += Number(c?.['pending_amount'] ?? 0)
     }
   }
 
@@ -53,8 +59,8 @@ export async function generateDailyPDFReport(
   doc.text('Daily Collection Report', 14, 26)
 
   doc.setFontSize(12)
-  doc.setTextColor(255, 255, 255)
   doc.setFont('helvetica', 'bold')
+  doc.setTextColor(255, 255, 255)
   doc.text(dayjs(date).format('DD MMMM YYYY'), pageWidth - 14, 18, { align: 'right' })
 
   doc.setFontSize(10)
@@ -63,11 +69,11 @@ export async function generateDailyPDFReport(
   doc.text(dayjs(date).format('dddd'), pageWidth - 14, 26, { align: 'right' })
 
   // ── 4 SUMMARY BOXES ────────────────────────────────────────
-  // Total printable width = 210 - 14(left margin) - 14(right margin) = 182 mm
+  // Printable width = 210 - 14 - 14 = 182 mm, 4 boxes with 4mm gaps
   const boxY = 55
   const boxH = 24
   const gap  = 4
-  const boxW = (pageWidth - 28 - gap * 3) / 4  // ≈ 42.5 mm each
+  const boxW = (pageWidth - 28 - gap * 3) / 4  // ≈ 42.5 mm
 
   const drawBox = (
     x: number,
@@ -76,52 +82,50 @@ export async function generateDailyPDFReport(
     bg: RGB,
     fg: RGB
   ) => {
-    doc.setFillColor(...bg)
+    doc.setFillColor(bg[0], bg[1], bg[2])
     doc.roundedRect(x, boxY, boxW, boxH, 3, 3, 'F')
-    doc.setTextColor(...fg)
+    doc.setTextColor(fg[0], fg[1], fg[2])
     doc.setFontSize(7)
     doc.setFont('helvetica', 'bold')
     doc.text(label, x + boxW / 2, boxY + 8,  { align: 'center' })
-    doc.setFontSize(12)
+    doc.setFontSize(11)
+    doc.setFont('helvetica', 'bold')
     doc.text(value, x + boxW / 2, boxY + 18, { align: 'center' })
   }
 
-  drawBox(14,                     'CASH COLLECTED',  formatCurrency(cashTotal),   [236, 253, 245], [4,   120, 87 ])
-  drawBox(14 + (boxW + gap),      'UPI COLLECTED',   formatCurrency(upiTotal),    [239, 246, 255], [29,  78,  216])
-  drawBox(14 + (boxW + gap) * 2,  'TOTAL COLLECTED', formatCurrency(grandTotal),  [238, 242, 255], [67,  56,  202])
-  drawBox(14 + (boxW + gap) * 3,  'TOTAL BALANCE',   formatCurrency(totalPending),[255, 251, 235], [180, 83,  9  ])
+  drawBox(14,                    'CASH COLLECTED',  formatCurrency(cashTotal),    [236, 253, 245], [4,   120, 87 ])
+  drawBox(14 + (boxW + gap),     'UPI COLLECTED',   formatCurrency(upiTotal),     [239, 246, 255], [29,  78,  216])
+  drawBox(14 + (boxW + gap) * 2, 'TOTAL COLLECTED', formatCurrency(grandTotal),   [238, 242, 255], [67,  56,  202])
+  drawBox(14 + (boxW + gap) * 3, 'TOTAL BALANCE',   formatCurrency(totalPending), [255, 251, 235], [180, 83,  9  ])
 
-  // ── TABLE SECTION LABEL ────────────────────────────────────
+  // ── TABLE HEADING ──────────────────────────────────────────
   doc.setFontSize(12)
   doc.setFont('helvetica', 'bold')
   doc.setTextColor(15, 23, 42)
   doc.text('Payment Details', 14, 92)
 
-  // ── TABLE DATA ─────────────────────────────────────────────
+  // ── TABLE ROWS ─────────────────────────────────────────────
   const bodyRows: string[][] = payments.map((p, i) => {
-    const pending =
-      (p.customers as unknown as { pending_amount?: number })?.pending_amount ?? 0
+    const c       = p.customers as unknown as Record<string, unknown>
+    const pending = Number(c?.['pending_amount'] ?? 0)
     return [
       String(i + 1),
-      p.customers?.name  || 'Unknown',
-      p.customers?.phone || '-',
-      formatCurrency(p.amount),
+      (p.customers?.name  || 'Unknown').toString(),
+      (p.customers?.phone || '-').toString(),
+      formatCurrency(Number(p.amount)),
       p.method.toUpperCase(),
       formatCurrency(pending),
-      p.notes || '-',
+      (p.notes || '-').toString(),
     ]
   })
 
-  // Grand-total summary row appended to body
-  const grandTotalRowIndex = bodyRows.length  // 0-based index within body section
-  const grandTotalRow: string[] = [
-    '', '', 'GRAND TOTAL', formatCurrency(grandTotal), '', '', '',
-  ]
+  // Grand total row — appended at the end of body (not as a foot, to avoid extra page)
+  const grandTotalRowIndex = bodyRows.length
+  const grandTotalRow: string[] = ['', '', 'GRAND TOTAL', formatCurrency(grandTotal), '', '', '']
 
-  // ── AUTO TABLE ─────────────────────────────────────────────
-  // Column widths must sum to 182 mm (= pageWidth - left margin - right margin)
-  // #(8) + Name(40) + Phone(26) + AmtPaid(28) + Method(18) + BalDue(28) + Notes(34) = 182 ✅
-  autoTable(doc, {
+  // ── AUTOTABLE ──────────────────────────────────────────────
+  // Column widths: 8+40+26+28+18+28+34 = 182 mm ✅ (exact printable width)
+  autoTableFn(doc, {
     startY: 96,
     head: [['#', 'Customer Name', 'Phone', 'Amount Paid', 'Method', 'Balance Due', 'Notes']],
     body: [...bodyRows, grandTotalRow],
@@ -133,13 +137,15 @@ export async function generateDailyPDFReport(
       fontStyle: 'bold',
       fontSize:  8.5,
       halign:    'left',
+      cellPadding: 3,
     },
 
     bodyStyles: {
-      fontSize:  8.5,
-      textColor: [51, 65, 85]   as RGB,
-      lineColor: [226, 232, 240] as RGB,
-      lineWidth: 0.1,
+      fontSize:    8.5,
+      textColor:   [51, 65, 85] as RGB,
+      lineColor:   [226, 232, 240] as RGB,
+      lineWidth:   0.1,
+      cellPadding: 2.5,
     },
 
     alternateRowStyles: {
@@ -156,17 +162,13 @@ export async function generateDailyPDFReport(
       6: { cellWidth: 34 },
     },
 
-    // Highlight the grand-total row (body section only — avoids touching the header)
-    didParseCell(data: {
-      section: string
-      row:     { index: number }
-      cell:    { styles: Record<string, unknown> }
-    }) {
+    didParseCell(data) {
+      // Only style grand total row inside body (not header)
       if (data.section === 'body' && data.row.index === grandTotalRowIndex) {
-        data.cell.styles['fillColor'] = [238, 242, 255] as RGB  // indigo-50
-        data.cell.styles['fontStyle'] = 'bold'
-        data.cell.styles['textColor'] = [67, 56, 202]  as RGB  // indigo-700
-        data.cell.styles['fontSize']  = 9
+        data.cell.styles.fillColor = [238, 242, 255] as RGB
+        data.cell.styles.fontStyle = 'bold'
+        data.cell.styles.textColor = [67, 56, 202] as RGB
+        data.cell.styles.fontSize  = 9
       }
     },
 
