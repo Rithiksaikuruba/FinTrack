@@ -1,4 +1,5 @@
 import dayjs from 'dayjs'
+import { getSupabaseClient } from '@/lib/supabase'
 import type { PaymentWithCustomer } from '@/types'
 
 function fmt(value: number): string {
@@ -12,32 +13,53 @@ function fmtBox(value: number): string {
   return `Rs. ${fmt(value)}`
 }
 
-function getPending(p: PaymentWithCustomer): number {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const c = p.customers as any
-  if (c == null) return 0
-  if (c.pending_amount != null) return Math.max(0, Number(c.pending_amount))
-  if (c.total_amount != null) {
-    return Math.max(0, Number(c.total_amount) - Number(c.paid_amount ?? 0))
-  }
-  return 0
-}
-
-// NOTE: called as generateDailyPDFReport(date, payments, businessName?)
+// Called as: generateDailyPDFReport(date, payments, businessName?)
 export async function generateDailyPDFReport(
   date: string,
   payments: PaymentWithCustomer[],
   businessName: string = 'FinTrack Business'
 ) {
-  const balances: Record<string, number> = {}
-  for (const p of payments) {
-    if (!(p.customer_id in balances)) {
-      balances[p.customer_id] = getPending(p)
-    }
+  if (!payments.length) return
+
+  const supabase = getSupabaseClient()
+
+  // ── Fetch total_amount for each unique customer directly ──
+  const customerIds = [...new Set(payments.map((p) => p.customer_id))]
+
+  const { data: customerRows, error: ce } = await supabase
+    .from('customers')
+    .select('id, total_amount')
+    .in('id', customerIds)
+
+  if (ce) throw new Error(ce.message)
+
+  const totalAmountMap: Record<string, number> = {}
+  for (const c of customerRows ?? []) {
+    totalAmountMap[c.id] = Number(c.total_amount ?? 0)
   }
 
+  // ── Sum ALL lifetime payments per customer ────────────────
+  const { data: allPaid, error: pe } = await supabase
+    .from('payments')
+    .select('customer_id, amount')
+    .in('customer_id', customerIds)
+
+  if (pe) throw new Error(pe.message)
+
+  const paidMap: Record<string, number> = {}
+  for (const p of allPaid ?? []) {
+    paidMap[p.customer_id] = (paidMap[p.customer_id] ?? 0) + Number(p.amount)
+  }
+
+  // ── Build balance map ─────────────────────────────────────
+  const balances: Record<string, number> = {}
+  for (const id of customerIds) {
+    balances[id] = Math.max(0, (totalAmountMap[id] ?? 0) - (paidMap[id] ?? 0))
+  }
+
+  console.log('[PDF] totalAmountMap:', JSON.stringify(totalAmountMap))
+  console.log('[PDF] paidMap:', JSON.stringify(paidMap))
   console.log('[PDF] balances:', JSON.stringify(balances))
-  console.log('[PDF] payments[0].customers:', JSON.stringify(payments[0]?.customers))
 
   const { jsPDF } = await import('jspdf')
 
@@ -63,8 +85,7 @@ export async function generateDailyPDFReport(
   const cashTotal    = payments.filter((p) => p.method === 'cash').reduce((s, p) => s + Number(p.amount), 0)
   const upiTotal     = payments.filter((p) => p.method === 'upi') .reduce((s, p) => s + Number(p.amount), 0)
   const grandTotal   = cashTotal + upiTotal
-  const uniqueIds    = [...new Set(payments.map((p) => p.customer_id))]
-  const totalPending = uniqueIds.reduce((s, id) => s + (balances[id] ?? 0), 0)
+  const totalPending = customerIds.reduce((s, id) => s + (balances[id] ?? 0), 0)
 
   // ── HEADER ────────────────────────────────────────────────
   fillRect(0, 0, pageWidth, 46, [79, 70, 229])
