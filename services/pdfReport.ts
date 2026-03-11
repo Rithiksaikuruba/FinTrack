@@ -7,33 +7,32 @@ export async function generateDailyPDFReport(
   payments: PaymentWithCustomer[],
   businessName: string = 'FinTrack Business'
 ) {
-  // ── SAFE DYNAMIC IMPORTS ───────────────────────────────────
-  let jsPDFClass: typeof import('jspdf')['jsPDF']
-  let autoTableFn: typeof import('jspdf-autotable')['default']
+  // ── IMPORT (jsPDF only — no autoTable) ────────────────────
+  const { jsPDF } = await import('jspdf')
 
-  try {
-    const jspdfModule      = await import('jspdf')
-    const autoTableModule  = await import('jspdf-autotable')
-    jsPDFClass   = jspdfModule.jsPDF
-    autoTableFn  = autoTableModule.default
-  } catch (err) {
-    console.error('[PDF] Failed to load jspdf or jspdf-autotable:', err)
-    throw new Error('PDF library failed to load. Please refresh and try again.')
-  }
-
-  // ── SETUP ──────────────────────────────────────────────────
-  const doc       = new jsPDFClass({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+  const doc       = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
   const pageWidth = doc.internal.pageSize.getWidth()   // 210 mm
   const pageH     = doc.internal.pageSize.getHeight()  // 297 mm
+  const ML        = 14  // left margin
+  const MR        = 14  // right margin
+  const PRINT_W   = pageWidth - ML - MR  // 182 mm
 
-  type RGB = [number, number, number]
+  // ── HELPER: set fill + draw rect ──────────────────────────
+  const fillRect = (x: number, y: number, w: number, h: number, r: number, g: number, b: number) => {
+    doc.setFillColor(r, g, b)
+    doc.rect(x, y, w, h, 'F')
+  }
+
+  const roundRect = (x: number, y: number, w: number, h: number, radius: number, r: number, g: number, b: number) => {
+    doc.setFillColor(r, g, b)
+    doc.roundedRect(x, y, w, h, radius, radius, 'F')
+  }
 
   // ── CALCULATIONS ───────────────────────────────────────────
   const cashTotal  = payments.filter((p) => p.method === 'cash').reduce((s, p) => s + Number(p.amount), 0)
   const upiTotal   = payments.filter((p) => p.method === 'upi') .reduce((s, p) => s + Number(p.amount), 0)
   const grandTotal = cashTotal + upiTotal
 
-  // Sum pending_amount per unique customer (comes from customer_summary view)
   const seenCustomers = new Set<string>()
   let totalPending = 0
   for (const p of payments) {
@@ -44,71 +43,171 @@ export async function generateDailyPDFReport(
     }
   }
 
-  // ── HEADER ─────────────────────────────────────────────────
-  doc.setFillColor(79, 70, 229)
-  doc.rect(0, 0, pageWidth, 45, 'F')
+  // ── HEADER BACKGROUND ─────────────────────────────────────
+  fillRect(0, 0, pageWidth, 45, 79, 70, 229)
 
+  // Business name
   doc.setTextColor(255, 255, 255)
   doc.setFontSize(20)
   doc.setFont('helvetica', 'bold')
-  doc.text(businessName, 14, 18)
+  doc.text(businessName, ML, 18)
 
+  // Sub-title
   doc.setFontSize(11)
   doc.setFont('helvetica', 'normal')
   doc.setTextColor(224, 231, 255)
-  doc.text('Daily Collection Report', 14, 26)
+  doc.text('Daily Collection Report', ML, 27)
 
+  // Date right-aligned
   doc.setFontSize(12)
   doc.setFont('helvetica', 'bold')
   doc.setTextColor(255, 255, 255)
-  doc.text(dayjs(date).format('DD MMMM YYYY'), pageWidth - 14, 18, { align: 'right' })
+  doc.text(dayjs(date).format('DD MMMM YYYY'), pageWidth - MR, 18, { align: 'right' })
 
+  // Day name right-aligned
   doc.setFontSize(10)
   doc.setFont('helvetica', 'normal')
   doc.setTextColor(224, 231, 255)
-  doc.text(dayjs(date).format('dddd'), pageWidth - 14, 26, { align: 'right' })
+  doc.text(dayjs(date).format('dddd'), pageWidth - MR, 27, { align: 'right' })
 
   // ── 4 SUMMARY BOXES ────────────────────────────────────────
-  // Printable width = 210 - 14 - 14 = 182 mm, 4 boxes with 4mm gaps
-  const boxY = 55
-  const boxH = 24
+  const boxY = 52
+  const boxH = 26
   const gap  = 4
-  const boxW = (pageWidth - 28 - gap * 3) / 4  // ≈ 42.5 mm
+  const boxW = (PRINT_W - gap * 3) / 4
 
-  const drawBox = (
-    x: number,
-    label: string,
-    value: string,
-    bg: RGB,
-    fg: RGB
-  ) => {
-    doc.setFillColor(bg[0], bg[1], bg[2])
-    doc.roundedRect(x, boxY, boxW, boxH, 3, 3, 'F')
-    doc.setTextColor(fg[0], fg[1], fg[2])
-    doc.setFontSize(7)
-    doc.setFont('helvetica', 'bold')
-    doc.text(label, x + boxW / 2, boxY + 8,  { align: 'center' })
-    doc.setFontSize(11)
-    doc.setFont('helvetica', 'bold')
-    doc.text(value, x + boxW / 2, boxY + 18, { align: 'center' })
+  interface BoxConfig {
+    label: string
+    value: string
+    bg: [number, number, number]
+    fg: [number, number, number]
   }
 
-  drawBox(14,                    'CASH COLLECTED',  formatCurrency(cashTotal),    [236, 253, 245], [4,   120, 87 ])
-  drawBox(14 + (boxW + gap),     'UPI COLLECTED',   formatCurrency(upiTotal),     [239, 246, 255], [29,  78,  216])
-  drawBox(14 + (boxW + gap) * 2, 'TOTAL COLLECTED', formatCurrency(grandTotal),   [238, 242, 255], [67,  56,  202])
-  drawBox(14 + (boxW + gap) * 3, 'TOTAL BALANCE',   formatCurrency(totalPending), [255, 251, 235], [180, 83,  9  ])
+  const boxes: BoxConfig[] = [
+    { label: 'CASH COLLECTED',  value: formatCurrency(cashTotal),    bg: [236, 253, 245], fg: [4,   120, 87 ] },
+    { label: 'UPI COLLECTED',   value: formatCurrency(upiTotal),     bg: [239, 246, 255], fg: [29,  78,  216] },
+    { label: 'TOTAL COLLECTED', value: formatCurrency(grandTotal),   bg: [238, 242, 255], fg: [67,  56,  202] },
+    { label: 'TOTAL BALANCE',   value: formatCurrency(totalPending), bg: [255, 251, 235], fg: [180, 83,  9  ] },
+  ]
 
-  // ── TABLE HEADING ──────────────────────────────────────────
-  doc.setFontSize(12)
+  boxes.forEach((box, i) => {
+    const x = ML + i * (boxW + gap)
+    roundRect(x, boxY, boxW, boxH, 3, ...box.bg)
+    doc.setTextColor(box.fg[0], box.fg[1], box.fg[2])
+    doc.setFontSize(7)
+    doc.setFont('helvetica', 'bold')
+    doc.text(box.label, x + boxW / 2, boxY + 8, { align: 'center' })
+    doc.setFontSize(11)
+    doc.text(box.value, x + boxW / 2, boxY + 19, { align: 'center' })
+  })
+
+  // ── TABLE SECTION TITLE ────────────────────────────────────
+  doc.setFontSize(11)
   doc.setFont('helvetica', 'bold')
   doc.setTextColor(15, 23, 42)
-  doc.text('Payment Details', 14, 92)
+  doc.text('Payment Details', ML, 90)
 
-  // ── TABLE ROWS ─────────────────────────────────────────────
-  const bodyRows: string[][] = payments.map((p, i) => {
+  // ── MANUAL TABLE ───────────────────────────────────────────
+  // Col widths must sum to PRINT_W = 182 mm
+  // #(8) + Name(42) + Phone(26) + Paid(28) + Method(16) + Balance(28) + Notes(34) = 182 ✅
+  const COL_WIDTHS = [8, 42, 26, 28, 16, 28, 34]
+  const HEADERS    = ['#', 'Customer Name', 'Phone', 'Amount Paid', 'Method', 'Balance Due', 'Notes']
+  const ROW_H      = 8
+  const HEAD_H     = 9
+  const CELL_PAD   = 2
+
+  // Column x positions
+  const colX: number[] = []
+  let cx = ML
+  COL_WIDTHS.forEach((w) => { colX.push(cx); cx += w })
+
+  // Horizontal alignment per column: 'left' | 'center' | 'right'
+  const COL_ALIGN: Array<'left' | 'center' | 'right'> = [
+    'center', 'left', 'left', 'right', 'center', 'right', 'left',
+  ]
+
+  let curY = 93
+
+  // Draw a single cell
+  const drawCell = (
+    col: number,
+    y: number,
+    h: number,
+    text: string,
+    opts: {
+      bold?: boolean
+      fontSize?: number
+      textColor?: [number, number, number]
+      bgColor?: [number, number, number]
+      borderColor?: [number, number, number]
+    } = {}
+  ) => {
+    const x = colX[col]
+    const w = COL_WIDTHS[col]
+
+    // Background
+    if (opts.bgColor) {
+      doc.setFillColor(opts.bgColor[0], opts.bgColor[1], opts.bgColor[2])
+      doc.rect(x, y, w, h, 'F')
+    }
+
+    // Border
+    const bc = opts.borderColor ?? [226, 232, 240]
+    doc.setDrawColor(bc[0], bc[1], bc[2])
+    doc.setLineWidth(0.1)
+    doc.rect(x, y, w, h, 'S')
+
+    // Text
+    const tc = opts.textColor ?? [51, 65, 85]
+    doc.setTextColor(tc[0], tc[1], tc[2])
+    doc.setFontSize(opts.fontSize ?? 8.5)
+    doc.setFont('helvetica', opts.bold ? 'bold' : 'normal')
+
+    const align = COL_ALIGN[col]
+    let tx: number
+    if (align === 'center') tx = x + w / 2
+    else if (align === 'right') tx = x + w - CELL_PAD
+    else tx = x + CELL_PAD
+
+    // Clip long text
+    const maxW  = w - CELL_PAD * 2
+    const clipped = doc.splitTextToSize(text, maxW)[0] as string
+    doc.text(clipped, tx, y + h / 2 + 1.2, { align, baseline: 'middle' })
+  }
+
+  // ── HEADER ROW ────────────────────────────────────────────
+  // Check if we need a new page (shouldn't for header, but be safe)
+  const drawHeaderRow = (y: number) => {
+    HEADERS.forEach((h, col) => {
+      drawCell(col, y, HEAD_H, h, {
+        bold: true,
+        fontSize: 8.5,
+        bgColor: [79, 70, 229],
+        textColor: [255, 255, 255],
+        borderColor: [99, 90, 240],
+      })
+    })
+  }
+
+  drawHeaderRow(curY)
+  curY += HEAD_H
+
+  // ── BODY ROWS ─────────────────────────────────────────────
+  payments.forEach((p, i) => {
+    // Page break check (leave 25mm for footer)
+    if (curY + ROW_H > pageH - 25) {
+      doc.addPage()
+      curY = 14
+      drawHeaderRow(curY)
+      curY += HEAD_H
+    }
+
     const c       = p.customers as unknown as Record<string, unknown>
     const pending = Number(c?.['pending_amount'] ?? 0)
-    return [
+    const isEven  = i % 2 === 1
+    const rowBg: [number, number, number] = isEven ? [248, 250, 252] : [255, 255, 255]
+
+    const cells = [
       String(i + 1),
       (p.customers?.name  || 'Unknown').toString(),
       (p.customers?.phone || '-').toString(),
@@ -117,78 +216,63 @@ export async function generateDailyPDFReport(
       formatCurrency(pending),
       (p.notes || '-').toString(),
     ]
+
+    cells.forEach((text, col) => {
+      const isAmount  = col === 3
+      const isBalance = col === 5
+      drawCell(col, curY, ROW_H, text, {
+        bold:      isAmount || isBalance,
+        bgColor:   rowBg,
+        textColor: isAmount
+          ? [15, 23, 42]
+          : isBalance
+          ? [180, 83, 9]
+          : [51, 65, 85],
+      })
+    })
+
+    curY += ROW_H
   })
 
-  // Grand total row — appended at the end of body (not as a foot, to avoid extra page)
-  const grandTotalRowIndex = bodyRows.length
-  const grandTotalRow: string[] = ['', '', 'GRAND TOTAL', formatCurrency(grandTotal), '', '', '']
+  // ── GRAND TOTAL ROW ───────────────────────────────────────
+  if (curY + ROW_H > pageH - 25) {
+    doc.addPage()
+    curY = 14
+  }
 
-  // ── AUTOTABLE ──────────────────────────────────────────────
-  // Column widths: 8+40+26+28+18+28+34 = 182 mm ✅ (exact printable width)
-  autoTableFn(doc, {
-    startY: 96,
-    head: [['#', 'Customer Name', 'Phone', 'Amount Paid', 'Method', 'Balance Due', 'Notes']],
-    body: [...bodyRows, grandTotalRow],
-    theme: 'grid',
-
-    headStyles: {
-      fillColor: [79, 70, 229] as RGB,
-      textColor: [255, 255, 255] as RGB,
-      fontStyle: 'bold',
-      fontSize:  8.5,
-      halign:    'left',
-      cellPadding: 3,
-    },
-
-    bodyStyles: {
-      fontSize:    8.5,
-      textColor:   [51, 65, 85] as RGB,
-      lineColor:   [226, 232, 240] as RGB,
-      lineWidth:   0.1,
-      cellPadding: 2.5,
-    },
-
-    alternateRowStyles: {
-      fillColor: [248, 250, 252] as RGB,
-    },
-
-    columnStyles: {
-      0: { cellWidth: 8,  halign: 'center' },
-      1: { cellWidth: 40 },
-      2: { cellWidth: 26 },
-      3: { cellWidth: 28, halign: 'right',  fontStyle: 'bold', textColor: [15, 23, 42]  as RGB },
-      4: { cellWidth: 18, halign: 'center', fontStyle: 'bold' },
-      5: { cellWidth: 28, halign: 'right',  fontStyle: 'bold', textColor: [180, 83, 9]  as RGB },
-      6: { cellWidth: 34 },
-    },
-
-    didParseCell(data) {
-      // Only style grand total row inside body (not header)
-      if (data.section === 'body' && data.row.index === grandTotalRowIndex) {
-        data.cell.styles.fillColor = [238, 242, 255] as RGB
-        data.cell.styles.fontStyle = 'bold'
-        data.cell.styles.textColor = [67, 56, 202] as RGB
-        data.cell.styles.fontSize  = 9
-      }
-    },
-
-    margin: { left: 14, right: 14 },
+  const totalCells = ['', '', 'GRAND TOTAL', formatCurrency(grandTotal), '', '', '']
+  totalCells.forEach((text, col) => {
+    drawCell(col, curY, ROW_H + 1, text, {
+      bold: true,
+      fontSize: 9,
+      bgColor:   [238, 242, 255],
+      textColor: [67, 56, 202],
+    })
   })
+  curY += ROW_H + 1
 
-  // ── FOOTER ─────────────────────────────────────────────────
-  doc.setFillColor(248, 250, 252)
-  doc.rect(0, pageH - 18, pageWidth, 18, 'F')
+  // ── FOOTER (every page) ────────────────────────────────────
+  const totalPages: number = (doc.internal as unknown as { getNumberOfPages: () => number }).getNumberOfPages()
 
-  doc.setFontSize(8)
-  doc.setFont('helvetica', 'normal')
-  doc.setTextColor(100, 116, 139)
-  doc.text(
-    `Generated on ${dayjs().format('DD/MM/YYYY HH:mm')} · ` +
-    `${payments.length} transaction${payments.length !== 1 ? 's' : ''} recorded`,
-    pageWidth / 2,
-    pageH - 8,
-    { align: 'center' }
-  )
+  for (let pg = 1; pg <= totalPages; pg++) {
+    doc.setPage(pg)
+    fillRect(0, pageH - 16, pageWidth, 16, 248, 250, 252)
+    doc.setDrawColor(226, 232, 240)
+    doc.setLineWidth(0.3)
+    doc.line(0, pageH - 16, pageWidth, pageH - 16)
+    doc.setFontSize(8)
+    doc.setFont('helvetica', 'normal')
+    doc.setTextColor(100, 116, 139)
+    doc.text(
+      `Generated on ${dayjs().format('DD/MM/YYYY HH:mm')} · ${payments.length} transaction${payments.length !== 1 ? 's' : ''} recorded`,
+      pageWidth / 2,
+      pageH - 6,
+      { align: 'center' }
+    )
+    if (totalPages > 1) {
+      doc.text(`Page ${pg} of ${totalPages}`, pageWidth - MR, pageH - 6, { align: 'right' })
+    }
+  }
 
   // ── SAVE ───────────────────────────────────────────────────
   const filename = `collection-report-${date}.pdf`
