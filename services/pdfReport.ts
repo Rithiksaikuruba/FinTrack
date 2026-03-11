@@ -2,8 +2,8 @@
  * generateDailyPDFReport.ts
  *
  * USAGE:
- *   import { generateDailyPDFReport } from './generateDailyPDFReport'
- *   await generateDailyPDFReport(supabase, date, payments, 'My Business')
+ * import { generateDailyPDFReport } from './generateDailyPDFReport'
+ * await generateDailyPDFReport(supabase, date, payments, 'My Business')
  */
 
 import dayjs from 'dayjs'
@@ -11,8 +11,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { PaymentWithCustomer } from '@/types'
 
 // ─────────────────────────────────────────────────────────────
-// Fetch pending_amount directly from customers table
-// (same field the CustomerCard UI uses — guaranteed to match)
+// Fetch total_amount and calculate pending based on actual payments
 // ─────────────────────────────────────────────────────────────
 export async function computeBalances(
   supabase: SupabaseClient,
@@ -23,19 +22,40 @@ export async function computeBalances(
 
   if (customerIds.length === 0) return balanceMap
 
-  const { data: customers, error } = await supabase
+  // 1. Fetch total amounts from the customers table
+  const { data: customers, error: customerError } = await supabase
     .from('customers')
-    .select('id, pending_amount')   // ← use the stored field, same as CustomerCard
+    .select('id, total_amount')
     .in('id', customerIds)
 
-  if (error) {
-    console.error('[computeBalances] error:', error.message)
+  if (customerError) {
+    console.error('[computeBalances] error fetching customers:', customerError.message)
     return balanceMap
   }
 
+  // 2. Fetch all historical payments for these customers to get the exact paid amount
+  const { data: allPayments, error: paymentError } = await supabase
+    .from('payments')
+    .select('customer_id, amount')
+    .in('customer_id', customerIds)
+
+  if (paymentError) {
+    console.error('[computeBalances] error fetching payments:', paymentError.message)
+    return balanceMap
+  }
+
+  // 3. Sum up all payments per customer
+  const paidAmounts: Record<string, number> = {}
+  for (const p of allPayments ?? []) {
+    paidAmounts[p.customer_id] = (paidAmounts[p.customer_id] || 0) + Number(p.amount || 0)
+  }
+
+  // 4. Calculate pending = total - paid
   for (const c of customers ?? []) {
-    balanceMap[c.id] = Math.max(0, Number(c.pending_amount ?? 0))
-    console.log(`[computeBalances] customer ${c.id} → pending_amount: ${balanceMap[c.id]}`)
+    const total = Number(c.total_amount ?? 0)
+    const paid = paidAmounts[c.id] ?? 0
+    balanceMap[c.id] = Math.max(0, total - paid)
+    console.log(`[computeBalances] customer ${c.id} → total: ${total}, paid: ${paid}, pending: ${balanceMap[c.id]}`)
   }
 
   return balanceMap
@@ -216,7 +236,6 @@ export async function generateDailyPDFReport(
       doc.addPage(); curY = 14; drawHeader(curY); curY += HEAD_H
     }
 
-    // pending_amount fetched from customers table — same as what the UI shows
     const pending = balances[p.customer_id] ?? 0
     const rowBg: RGB = i % 2 === 1 ? [248, 250, 252] : [255, 255, 255]
 
