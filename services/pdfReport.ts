@@ -11,68 +11,51 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { PaymentWithCustomer } from '@/types'
 
 // ─────────────────────────────────────────────────────────────
-// Build balance map using THREE sources in priority order:
-//  1. p.customers.pending_amount  — already joined, zero extra cost
-//  2. Supabase fetch of pending_amount — if join didn't include it
-//  3. Manual total_amount - paid_amount — absolute last resort
+// Fetch pending_amount directly from customers table via DB.
+// The payments join only includes name/phone/daily_amount,
+// so we MUST do a separate fetch for balance fields.
 // ─────────────────────────────────────────────────────────────
 export async function computeBalances(
   supabase: SupabaseClient,
   payments: PaymentWithCustomer[]
 ): Promise<Record<string, number>> {
   const balanceMap: Record<string, number> = {}
+  const customerIds = [...new Set(payments.map((p) => p.customer_id))]
 
-  // ── PASS 1: use already-joined customer data ──────────────
-  for (const p of payments) {
-    if (p.customer_id in balanceMap) continue
-    const joined = p.customers as Record<string, unknown> | null | undefined
-    const fromJoin = joined?.pending_amount
-    if (fromJoin !== undefined && fromJoin !== null) {
-      balanceMap[p.customer_id] = Math.max(0, Number(fromJoin))
-      console.log(`[balance] PASS1 ${p.customer_id} → ${balanceMap[p.customer_id]}`)
+  if (customerIds.length === 0) return balanceMap
+
+  console.log('[balance] Fetching from DB for customer IDs:', customerIds)
+
+  const { data, error } = await supabase
+    .from('customers')
+    .select('id, pending_amount, total_amount, paid_amount')
+    .in('id', customerIds)
+
+  if (error) {
+    console.error('[balance] DB fetch error:', error.message)
+    return balanceMap
+  }
+
+  console.log('[balance] DB returned:', JSON.stringify(data, null, 2))
+
+  for (const c of data ?? []) {
+    // Priority 1: use pending_amount if it exists
+    if (c.pending_amount !== null && c.pending_amount !== undefined) {
+      balanceMap[c.id] = Math.max(0, Number(c.pending_amount))
+      console.log(`[balance] ${c.id} via pending_amount → ${balanceMap[c.id]}`)
+    }
+    // Priority 2: compute from total_amount - paid_amount
+    else if (c.total_amount !== null && c.total_amount !== undefined) {
+      const total = Number(c.total_amount ?? 0)
+      const paid  = Number(c.paid_amount  ?? 0)
+      balanceMap[c.id] = Math.max(0, total - paid)
+      console.log(`[balance] ${c.id} via total-paid → ${balanceMap[c.id]}`)
+    } else {
+      balanceMap[c.id] = 0
+      console.warn(`[balance] ${c.id} → no balance fields found, defaulting to 0`)
     }
   }
 
-  // ── PASS 2: fetch missing ones from DB ────────────────────
-  const allIds     = [...new Set(payments.map((p) => p.customer_id))]
-  const missingIds = allIds.filter((id) => !(id in balanceMap))
-
-  if (missingIds.length > 0) {
-    console.log('[balance] PASS2 fetching from DB for:', missingIds)
-
-    const { data: customers, error } = await supabase
-      .from('customers')
-      .select('id, pending_amount, total_amount, paid_amount')
-      .in('id', missingIds)
-
-    if (error) {
-      console.error('[balance] PASS2 DB error:', error.message)
-    }
-
-    for (const c of customers ?? []) {
-      if (c.pending_amount !== null && c.pending_amount !== undefined) {
-        // Use stored pending_amount (same as CustomerCard does)
-        balanceMap[c.id] = Math.max(0, Number(c.pending_amount))
-        console.log(`[balance] PASS2 pending_amount ${c.id} → ${balanceMap[c.id]}`)
-      } else {
-        // Absolute fallback: compute manually
-        const total = Number(c.total_amount ?? 0)
-        const paid  = Number(c.paid_amount  ?? 0)
-        balanceMap[c.id] = Math.max(0, total - paid)
-        console.log(`[balance] PASS2 computed ${c.id} → ${balanceMap[c.id]}`)
-      }
-    }
-  }
-
-  // ── PASS 3: anything still missing → 0 ───────────────────
-  for (const id of allIds) {
-    if (!(id in balanceMap)) {
-      console.warn('[balance] PASS3 no data for customer:', id, '→ 0')
-      balanceMap[id] = 0
-    }
-  }
-
-  console.log('[balance] final map:', balanceMap)
   return balanceMap
 }
 
@@ -99,11 +82,16 @@ export async function generateDailyPDFReport(
   payments: PaymentWithCustomer[],
   businessName: string = 'FinTrack Business'
 ) {
-  console.log('[PDF] payments received:', payments.length)
-  console.log('[PDF] sample payment:', JSON.stringify(payments[0], null, 2))
+  console.log('[PDF] payments count:', payments.length)
+  if (payments.length > 0) {
+    console.log('[PDF] First payment object:', JSON.stringify(payments[0], null, 2))
+    console.log('[PDF] customers fields available:', Object.keys(payments[0].customers ?? {}))
+    console.log('[PDF] customers data:', JSON.stringify(payments[0].customers, null, 2))
+  }
 
-  // Always compute fresh balances here — never rely on caller to pass them
+  // Always fetch balances fresh from DB
   const balances = await computeBalances(supabase, payments)
+  console.log('[PDF] Final balances map:', JSON.stringify(balances, null, 2))
 
   const { jsPDF } = await import('jspdf')
 
@@ -137,7 +125,7 @@ export async function generateDailyPDFReport(
   const uniqueIds    = [...new Set(payments.map((p) => p.customer_id))]
   const totalPending = uniqueIds.reduce((s, id) => s + (balances[id] ?? 0), 0)
 
-  console.log('[PDF] cashTotal:', cashTotal, 'upiTotal:', upiTotal, 'totalPending:', totalPending)
+  console.log('[PDF] cashTotal:', cashTotal, '| upiTotal:', upiTotal, '| totalPending:', totalPending)
 
   // ── HEADER ────────────────────────────────────────────────
   fillRect(0, 0, pageWidth, 46, [79, 70, 229])
@@ -263,7 +251,7 @@ export async function generateDailyPDFReport(
     }
 
     const pending = balances[p.customer_id] ?? 0
-    console.log(`[PDF] row ${i + 1} customer=${p.customer_id} amount=${p.amount} pending=${pending}`)
+    console.log(`[PDF] row ${i + 1}: customer=${p.customer_id} | amount=${p.amount} | pending=${pending}`)
 
     const rowBg: RGB = i % 2 === 1 ? [248, 250, 252] : [255, 255, 255]
 
