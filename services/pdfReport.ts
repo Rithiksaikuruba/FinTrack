@@ -1,12 +1,16 @@
 /**
  * generateDailyPDFReport.ts
  *
- * Call it like this from your page/component:
+ * Balance is computed directly inside this function:
+ *   1. Collect all unique customer_ids from today's payments
+ *   2. Fetch ALL payments ever made for those customers from Supabase
+ *   3. Fetch total_amount for those customers from Supabase
+ *   4. pending = total_amount - sum(all payments)
  *
+ * This does NOT rely on the customer_summary view or any special query.
+ *
+ * Usage (no change needed to your existing payments fetch query):
  *   await generateDailyPDFReport(supabase, date, payments, 'My Business')
- *
- * The function fetches customer_summary balances internally using the
- * supabase client you pass — no query changes needed on your end.
  */
 
 import dayjs from 'dayjs'
@@ -32,38 +36,41 @@ export async function generateDailyPDFReport(
 ) {
   const { jsPDF } = await import('jspdf')
 
-  // ── FETCH BALANCES from customer_summary view ──────────────
-  // Get all unique customer IDs from today's payments
+  // ── STEP 1: Get unique customer IDs from today's payments ──
   const customerIds = [...new Set(payments.map((p) => p.customer_id))]
 
-  // Query the customer_summary VIEW directly — this has pending_amount
-  const { data: summaries, error } = await supabase
-    .from('customer_summary')
-    .select('id, total_amount, paid_amount, pending_amount')
+  // ── STEP 2: Fetch total_amount for each customer ───────────
+  const { data: customerData } = await supabase
+    .from('customers')
+    .select('id, total_amount')
     .in('id', customerIds)
 
-  if (error) {
-    console.error('[PDF] Failed to fetch customer_summary:', error.message)
+  // Build map: customer_id → total_amount
+  const totalAmountMap: Record<string, number> = {}
+  for (const c of customerData ?? []) {
+    totalAmountMap[c.id] = Number(c.total_amount ?? 0)
   }
 
-  // Build a map: customer_id → pending_amount
+  // ── STEP 3: Fetch ALL payments ever made for these customers
+  const { data: allPayments } = await supabase
+    .from('payments')
+    .select('customer_id, amount')
+    .in('customer_id', customerIds)
+
+  // Build map: customer_id → total paid so far (ALL time, not just today)
+  const totalPaidMap: Record<string, number> = {}
+  for (const p of allPayments ?? []) {
+    const id = p.customer_id
+    totalPaidMap[id] = (totalPaidMap[id] ?? 0) + Number(p.amount ?? 0)
+  }
+
+  // ── STEP 4: Compute pending = total_amount - total_paid ────
+  // pendingMap[customer_id] = how much they still owe
   const pendingMap: Record<string, number> = {}
-  if (summaries) {
-    for (const s of summaries) {
-      pendingMap[s.id] = Number(s.pending_amount ?? 0)
-    }
-  }
-
-  // Fallback: if customer_summary failed, use total_amount from payment's customers field
-  for (const p of payments) {
-    if (pendingMap[p.customer_id] === undefined) {
-      const c = p.customers as unknown as Record<string, unknown>
-      const total    = Number(c?.['total_amount']  ?? 0)
-      const interest = Number(c?.['interest']      ?? 0)
-      const loan     = Number(c?.['loan_amount']   ?? 0)
-      // Use whichever field is available
-      pendingMap[p.customer_id] = total > 0 ? total : (loan + interest)
-    }
+  for (const id of customerIds) {
+    const total = totalAmountMap[id] ?? 0
+    const paid  = totalPaidMap[id]  ?? 0
+    pendingMap[id] = Math.max(0, total - paid)
   }
 
   // ── SETUP ──────────────────────────────────────────────────
@@ -86,20 +93,13 @@ export async function generateDailyPDFReport(
     doc.roundedRect(x, y, w, h, r, r, 'F')
   }
 
-  // ── CALCULATIONS ───────────────────────────────────────────
+  // ── TOTALS ─────────────────────────────────────────────────
   const cashTotal  = payments.filter((p) => p.method === 'cash').reduce((s, p) => s + Number(p.amount), 0)
   const upiTotal   = payments.filter((p) => p.method === 'upi') .reduce((s, p) => s + Number(p.amount), 0)
   const grandTotal = cashTotal + upiTotal
 
-  // Total balance = sum of pending for each unique customer
-  const seenIds = new Set<string>()
-  let totalPending = 0
-  for (const p of payments) {
-    if (!seenIds.has(p.customer_id)) {
-      seenIds.add(p.customer_id)
-      totalPending += pendingMap[p.customer_id] ?? 0
-    }
-  }
+  // Sum pending across all unique customers who paid today
+  const totalPending = customerIds.reduce((s, id) => s + (pendingMap[id] ?? 0), 0)
 
   // ── HEADER ─────────────────────────────────────────────────
   fillRect(0, 0, pageWidth, 46, [79, 70, 229])
