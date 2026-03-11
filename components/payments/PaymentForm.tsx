@@ -210,14 +210,13 @@ export function PaymentForm({ preselectedCustomer, onSuccess }: PaymentFormProps
           <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 text-lg font-bold">
             ₹
           </span>
-          <input
-            ref={amountRef}
-            type="number"
-            inputMode="numeric"
-            placeholder="0"
-            {...register('amount', { valueAsNumber: true })}
-            className={cn(inputBaseClasses, "pl-9 text-lg font-extrabold text-slate-900")}
-          />
+<input
+  type="number"
+  inputMode="numeric"
+  placeholder="0"
+  {...register('amount', { valueAsNumber: true })}
+  className={cn(inputBaseClasses, "pl-9 text-lg font-extrabold text-slate-900")}
+/>
         </div>
         {errors.amount && (
           <p className="text-xs font-medium text-rose-500 mt-2">{errors.amount.message}</p>
