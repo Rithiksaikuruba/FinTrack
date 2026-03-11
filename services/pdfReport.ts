@@ -1,6 +1,15 @@
 /**
  * generateDailyPDFReport.ts
  *
+ * ─── IMPORTANT — UPDATE YOUR PAYMENTS QUERY FIRST ──────────────────────────
+ * Wherever you fetch today's payments, make sure the customers join includes
+ * pending_amount, total_amount and paid_amount, e.g.:
+ *
+ *   .select('*, customers(name, phone, daily_amount, pending_amount, total_amount, paid_amount)')
+ *
+ * Without this the balance will never appear in the PDF.
+ * ────────────────────────────────────────────────────────────────────────────
+ *
  * USAGE:
  *   import { generateDailyPDFReport } from './generateDailyPDFReport'
  *   await generateDailyPDFReport(supabase, date, payments, 'My Business')
@@ -11,51 +20,82 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { PaymentWithCustomer } from '@/types'
 
 // ─────────────────────────────────────────────────────────────
-// Fetch pending_amount directly from customers table via DB.
-// The payments join only includes name/phone/daily_amount,
-// so we MUST do a separate fetch for balance fields.
+// Build balance map — tries 3 sources in order:
+//   1. p.customers.pending_amount  (from the join — FREE, instant)
+//   2. p.customers.total_amount - p.customers.paid_amount  (computed from join)
+//   3. Direct DB fetch as absolute last resort
 // ─────────────────────────────────────────────────────────────
 export async function computeBalances(
   supabase: SupabaseClient,
   payments: PaymentWithCustomer[]
 ): Promise<Record<string, number>> {
   const balanceMap: Record<string, number> = {}
-  const customerIds = [...new Set(payments.map((p) => p.customer_id))]
+  const needsDB: string[] = []
 
-  if (customerIds.length === 0) return balanceMap
+  for (const p of payments) {
+    if (p.customer_id in balanceMap) continue
 
-  console.log('[balance] Fetching from DB for customer IDs:', customerIds)
+    // Cast to any so we can read fields that may not be in the TS type yet
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const c = p.customers as any
 
-  const { data, error } = await supabase
-    .from('customers')
-    .select('id, pending_amount, total_amount, paid_amount')
-    .in('id', customerIds)
-
-  if (error) {
-    console.error('[balance] DB fetch error:', error.message)
-    return balanceMap
-  }
-
-  console.log('[balance] DB returned:', JSON.stringify(data, null, 2))
-
-  for (const c of data ?? []) {
-    // Priority 1: use pending_amount if it exists
-    if (c.pending_amount !== null && c.pending_amount !== undefined) {
-      balanceMap[c.id] = Math.max(0, Number(c.pending_amount))
-      console.log(`[balance] ${c.id} via pending_amount → ${balanceMap[c.id]}`)
-    }
-    // Priority 2: compute from total_amount - paid_amount
-    else if (c.total_amount !== null && c.total_amount !== undefined) {
+    if (c?.pending_amount != null) {
+      // ✅ Source 1: pending_amount came with the join
+      balanceMap[p.customer_id] = Math.max(0, Number(c.pending_amount))
+      console.log(`[balance] JOIN pending_amount  ${p.customer_id} → ${balanceMap[p.customer_id]}`)
+    } else if (c?.total_amount != null) {
+      // ✅ Source 2: compute from total_amount - paid_amount in the join
       const total = Number(c.total_amount ?? 0)
       const paid  = Number(c.paid_amount  ?? 0)
-      balanceMap[c.id] = Math.max(0, total - paid)
-      console.log(`[balance] ${c.id} via total-paid → ${balanceMap[c.id]}`)
+      balanceMap[p.customer_id] = Math.max(0, total - paid)
+      console.log(`[balance] JOIN computed        ${p.customer_id} → ${balanceMap[p.customer_id]}`)
     } else {
-      balanceMap[c.id] = 0
-      console.warn(`[balance] ${c.id} → no balance fields found, defaulting to 0`)
+      // ⚠️ Source 3: must fetch from DB
+      needsDB.push(p.customer_id)
+      console.warn(`[balance] JOIN missing — will fetch from DB: ${p.customer_id}`)
     }
   }
 
+  // Source 3: DB fetch for anything still missing
+  if (needsDB.length > 0) {
+    console.log('[balance] DB fetch for:', needsDB)
+
+    const { data, error } = await supabase
+      .from('customers')
+      .select('id, pending_amount, total_amount, paid_amount')
+      .in('id', needsDB)
+
+    if (error) {
+      console.error('[balance] DB fetch FAILED:', error.message, error.details)
+    } else {
+      console.log('[balance] DB returned rows:', data?.length ?? 0, JSON.stringify(data))
+    }
+
+    for (const row of data ?? []) {
+      if (row.pending_amount != null) {
+        balanceMap[row.id] = Math.max(0, Number(row.pending_amount))
+        console.log(`[balance] DB pending_amount   ${row.id} → ${balanceMap[row.id]}`)
+      } else if (row.total_amount != null) {
+        const total = Number(row.total_amount ?? 0)
+        const paid  = Number(row.paid_amount  ?? 0)
+        balanceMap[row.id] = Math.max(0, total - paid)
+        console.log(`[balance] DB computed          ${row.id} → ${balanceMap[row.id]}`)
+      } else {
+        balanceMap[row.id] = 0
+        console.error(`[balance] DB row has NO balance fields at all for ${row.id}`)
+      }
+    }
+  }
+
+  // Final safety — anything still missing → 0
+  for (const p of payments) {
+    if (!(p.customer_id in balanceMap)) {
+      balanceMap[p.customer_id] = 0
+      console.error(`[balance] GIVING UP — no balance found for ${p.customer_id}`)
+    }
+  }
+
+  console.log('[balance] ✅ Final map:', JSON.stringify(balanceMap))
   return balanceMap
 }
 
@@ -83,15 +123,11 @@ export async function generateDailyPDFReport(
   businessName: string = 'FinTrack Business'
 ) {
   console.log('[PDF] payments count:', payments.length)
-  if (payments.length > 0) {
-    console.log('[PDF] First payment object:', JSON.stringify(payments[0], null, 2))
-    console.log('[PDF] customers fields available:', Object.keys(payments[0].customers ?? {}))
-    console.log('[PDF] customers data:', JSON.stringify(payments[0].customers, null, 2))
+  if (payments[0]) {
+    console.log('[PDF] sample payment customers fields:', JSON.stringify(payments[0].customers))
   }
 
-  // Always fetch balances fresh from DB
   const balances = await computeBalances(supabase, payments)
-  console.log('[PDF] Final balances map:', JSON.stringify(balances, null, 2))
 
   const { jsPDF } = await import('jspdf')
 
@@ -115,17 +151,11 @@ export async function generateDailyPDFReport(
   }
 
   // ── TOTALS ────────────────────────────────────────────────
-  const cashTotal    = payments
-    .filter((p) => p.method === 'cash')
-    .reduce((s, p) => s + Number(p.amount), 0)
-  const upiTotal     = payments
-    .filter((p) => p.method === 'upi')
-    .reduce((s, p) => s + Number(p.amount), 0)
+  const cashTotal    = payments.filter((p) => p.method === 'cash').reduce((s, p) => s + Number(p.amount), 0)
+  const upiTotal     = payments.filter((p) => p.method === 'upi') .reduce((s, p) => s + Number(p.amount), 0)
   const grandTotal   = cashTotal + upiTotal
   const uniqueIds    = [...new Set(payments.map((p) => p.customer_id))]
   const totalPending = uniqueIds.reduce((s, id) => s + (balances[id] ?? 0), 0)
-
-  console.log('[PDF] cashTotal:', cashTotal, '| upiTotal:', upiTotal, '| totalPending:', totalPending)
 
   // ── HEADER ────────────────────────────────────────────────
   fillRect(0, 0, pageWidth, 46, [79, 70, 229])
@@ -188,7 +218,6 @@ export async function generateDailyPDFReport(
   doc.text('Payment Details', ML, 91)
 
   // ── COLUMN CONFIG ─────────────────────────────────────────
-  // #(7)+Name(43)+Phone(27)+Paid(35)+Method(17)+Balance(35)+Notes(26) = 190 ✅
   const COL_W   = [7, 43, 27, 35, 17, 35, 26]
   const HEADERS = ['#', 'Customer Name', 'Phone', 'Paid (Rs.)', 'Method', 'Balance (Rs.)', 'Notes']
   const COL_ALIGN: Array<'left' | 'center' | 'right'> = [
@@ -230,10 +259,8 @@ export async function generateDailyPDFReport(
   const drawHeader = (y: number) => {
     HEADERS.forEach((h, col) =>
       drawCell(col, y, HEAD_H, h, {
-        bold: true,
-        fontSize: 8.5,
-        bgColor: [79, 70, 229],
-        textColor: [255, 255, 255],
+        bold: true, fontSize: 8.5,
+        bgColor: [79, 70, 229], textColor: [255, 255, 255],
       })
     )
   }
@@ -244,15 +271,10 @@ export async function generateDailyPDFReport(
   // ── BODY ROWS ─────────────────────────────────────────────
   payments.forEach((p, i) => {
     if (curY + ROW_H > pageH - 26) {
-      doc.addPage()
-      curY = 14
-      drawHeader(curY)
-      curY += HEAD_H
+      doc.addPage(); curY = 14; drawHeader(curY); curY += HEAD_H
     }
 
     const pending = balances[p.customer_id] ?? 0
-    console.log(`[PDF] row ${i + 1}: customer=${p.customer_id} | amount=${p.amount} | pending=${pending}`)
-
     const rowBg: RGB = i % 2 === 1 ? [248, 250, 252] : [255, 255, 255]
 
     const cells: string[] = [
@@ -283,13 +305,10 @@ export async function generateDailyPDFReport(
   // ── GRAND TOTAL ROW ───────────────────────────────────────
   if (curY + ROW_H + 2 > pageH - 26) { doc.addPage(); curY = 14 }
 
-  const grandCells = ['', '', 'GRAND TOTAL', fmt(grandTotal), '', '', '']
-  grandCells.forEach((text, col) =>
+  ;['', '', 'GRAND TOTAL', fmt(grandTotal), '', '', ''].forEach((text, col) =>
     drawCell(col, curY, ROW_H + 2, text, {
-      bold: true,
-      fontSize: 9,
-      bgColor: [238, 242, 255],
-      textColor: [67, 56, 202],
+      bold: true, fontSize: 9,
+      bgColor: [238, 242, 255], textColor: [67, 56, 202],
     })
   )
 
@@ -308,9 +327,7 @@ export async function generateDailyPDFReport(
     doc.setTextColor(100, 116, 139)
     doc.text(
       `Generated: ${dayjs().format('DD/MM/YYYY HH:mm')}  |  ${payments.length} transaction${payments.length !== 1 ? 's' : ''}`,
-      pageWidth / 2,
-      pageH - 6,
-      { align: 'center' }
+      pageWidth / 2, pageH - 6, { align: 'center' }
     )
     if (totalPages > 1) {
       doc.text(`Page ${pg}/${totalPages}`, pageWidth - MR, pageH - 6, { align: 'right' })
