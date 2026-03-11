@@ -45,6 +45,9 @@ export interface PaymentWithCustomer extends Payment {
     name: string
     phone: string
     daily_amount: number
+    pending_amount: number   // ← ADDED
+    total_amount: number     // ← ADDED
+    paid_amount: number      // ← ADDED
   }
 }
 
