@@ -1,22 +1,68 @@
 /**
  * generateDailyPDFReport.ts
  *
- * Balance is computed directly inside this function:
- *   1. Collect all unique customer_ids from today's payments
- *   2. Fetch ALL payments ever made for those customers from Supabase
- *   3. Fetch total_amount for those customers from Supabase
- *   4. pending = total_amount - sum(all payments)
+ * SIMPLE USAGE — call computeBalances first, then pass the result here:
  *
- * This does NOT rely on the customer_summary view or any special query.
+ *   import { computeBalances, generateDailyPDFReport } from './generateDailyPDFReport'
  *
- * Usage (no change needed to your existing payments fetch query):
- *   await generateDailyPDFReport(supabase, date, payments, 'My Business')
+ *   const balances = await computeBalances(supabase, payments)
+ *   await generateDailyPDFReport(date, payments, balances, 'My Business')
+ *
+ * computeBalances fetches from Supabase and returns a plain object like:
+ *   { "customer-uuid-1": 49000, "customer-uuid-2": 12000 }
  */
 
 import dayjs from 'dayjs'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { PaymentWithCustomer } from '@/types'
 
+// ─────────────────────────────────────────────────────────────
+// STEP 1: Call this BEFORE generateDailyPDFReport
+// Returns { [customer_id]: pendingBalance }
+// ─────────────────────────────────────────────────────────────
+export async function computeBalances(
+  supabase: SupabaseClient,
+  payments: PaymentWithCustomer[]
+): Promise<Record<string, number>> {
+  const customerIds = [...new Set(payments.map((p) => p.customer_id))]
+  const balanceMap: Record<string, number> = {}
+
+  // Fetch total_amount for each customer
+  const { data: customers, error: cErr } = await supabase
+    .from('customers')
+    .select('id, total_amount')
+    .in('id', customerIds)
+
+  if (cErr) console.error('[computeBalances] customers fetch error:', cErr.message)
+
+  // Fetch ALL payments ever made for these customers (not just today)
+  const { data: allPayments, error: pErr } = await supabase
+    .from('payments')
+    .select('customer_id, amount')
+    .in('customer_id', customerIds)
+
+  if (pErr) console.error('[computeBalances] payments fetch error:', pErr.message)
+
+  // Build paid map
+  const paidMap: Record<string, number> = {}
+  for (const p of allPayments ?? []) {
+    paidMap[p.customer_id] = (paidMap[p.customer_id] ?? 0) + Number(p.amount)
+  }
+
+  // Compute balance per customer
+  for (const c of customers ?? []) {
+    const total = Number(c.total_amount ?? 0)
+    const paid  = paidMap[c.id] ?? 0
+    balanceMap[c.id] = Math.max(0, total - paid)
+    console.log(`[computeBalances] ${c.id}: total=${total}, paid=${paid}, balance=${balanceMap[c.id]}`)
+  }
+
+  return balanceMap
+}
+
+// ─────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────
 function fmt(value: number): string {
   return Number(value).toLocaleString('en-IN', {
     minimumFractionDigits: 2,
@@ -28,58 +74,23 @@ function fmtBox(value: number): string {
   return `Rs. ${fmt(value)}`
 }
 
+// ─────────────────────────────────────────────────────────────
+// STEP 2: Generate the PDF
+// ─────────────────────────────────────────────────────────────
 export async function generateDailyPDFReport(
-  supabase: SupabaseClient,
   date: string,
   payments: PaymentWithCustomer[],
+  balances: Record<string, number>,   // ← from computeBalances()
   businessName: string = 'FinTrack Business'
 ) {
   const { jsPDF } = await import('jspdf')
 
-  // ── STEP 1: Get unique customer IDs from today's payments ──
-  const customerIds = [...new Set(payments.map((p) => p.customer_id))]
-
-  // ── STEP 2: Fetch total_amount for each customer ───────────
-  const { data: customerData } = await supabase
-    .from('customers')
-    .select('id, total_amount')
-    .in('id', customerIds)
-
-  // Build map: customer_id → total_amount
-  const totalAmountMap: Record<string, number> = {}
-  for (const c of customerData ?? []) {
-    totalAmountMap[c.id] = Number(c.total_amount ?? 0)
-  }
-
-  // ── STEP 3: Fetch ALL payments ever made for these customers
-  const { data: allPayments } = await supabase
-    .from('payments')
-    .select('customer_id, amount')
-    .in('customer_id', customerIds)
-
-  // Build map: customer_id → total paid so far (ALL time, not just today)
-  const totalPaidMap: Record<string, number> = {}
-  for (const p of allPayments ?? []) {
-    const id = p.customer_id
-    totalPaidMap[id] = (totalPaidMap[id] ?? 0) + Number(p.amount ?? 0)
-  }
-
-  // ── STEP 4: Compute pending = total_amount - total_paid ────
-  // pendingMap[customer_id] = how much they still owe
-  const pendingMap: Record<string, number> = {}
-  for (const id of customerIds) {
-    const total = totalAmountMap[id] ?? 0
-    const paid  = totalPaidMap[id]  ?? 0
-    pendingMap[id] = Math.max(0, total - paid)
-  }
-
-  // ── SETUP ──────────────────────────────────────────────────
   const doc       = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
   const pageWidth = doc.internal.pageSize.getWidth()
   const pageH     = doc.internal.pageSize.getHeight()
   const ML        = 10
   const MR        = 10
-  const PRINT_W   = pageWidth - ML - MR  // 190 mm
+  const PRINT_W   = pageWidth - ML - MR
 
   type RGB = [number, number, number]
 
@@ -94,12 +105,11 @@ export async function generateDailyPDFReport(
   }
 
   // ── TOTALS ─────────────────────────────────────────────────
-  const cashTotal  = payments.filter((p) => p.method === 'cash').reduce((s, p) => s + Number(p.amount), 0)
-  const upiTotal   = payments.filter((p) => p.method === 'upi') .reduce((s, p) => s + Number(p.amount), 0)
-  const grandTotal = cashTotal + upiTotal
-
-  // Sum pending across all unique customers who paid today
-  const totalPending = customerIds.reduce((s, id) => s + (pendingMap[id] ?? 0), 0)
+  const cashTotal    = payments.filter((p) => p.method === 'cash').reduce((s, p) => s + Number(p.amount), 0)
+  const upiTotal     = payments.filter((p) => p.method === 'upi') .reduce((s, p) => s + Number(p.amount), 0)
+  const grandTotal   = cashTotal + upiTotal
+  const uniqueIds    = [...new Set(payments.map((p) => p.customer_id))]
+  const totalPending = uniqueIds.reduce((s, id) => s + (balances[id] ?? 0), 0)
 
   // ── HEADER ─────────────────────────────────────────────────
   fillRect(0, 0, pageWidth, 46, [79, 70, 229])
@@ -162,7 +172,7 @@ export async function generateDailyPDFReport(
   doc.text('Payment Details', ML, 91)
 
   // ── COLUMN CONFIG ─────────────────────────────────────────
-  // #(7) + Name(43) + Phone(27) + Paid(35) + Method(17) + Balance(35) + Notes(26) = 190 ✅
+  // #(7)+Name(43)+Phone(27)+Paid(35)+Method(17)+Balance(35)+Notes(26) = 190 ✅
   const COL_W   = [7, 43, 27, 35, 17, 35, 26]
   const HEADERS = ['#', 'Customer Name', 'Phone', 'Paid (Rs.)', 'Method', 'Balance (Rs.)', 'Notes']
   const COL_ALIGN: Array<'left' | 'center' | 'right'> = [
@@ -178,17 +188,12 @@ export async function generateDailyPDFReport(
   const PAD    = 2.5
   let curY     = 94
 
-  // ── DRAW CELL ─────────────────────────────────────────────
   const drawCell = (
-    col: number,
-    y: number,
-    h: number,
-    text: string,
+    col: number, y: number, h: number, text: string,
     opts: { bold?: boolean; fontSize?: number; textColor?: RGB; bgColor?: RGB } = {}
   ) => {
     const x = colX[col]
     const w = COL_W[col]
-
     if (opts.bgColor) {
       doc.setFillColor(opts.bgColor[0], opts.bgColor[1], opts.bgColor[2])
       doc.rect(x, y, w, h, 'F')
@@ -196,18 +201,12 @@ export async function generateDailyPDFReport(
     doc.setDrawColor(210, 215, 230)
     doc.setLineWidth(0.12)
     doc.rect(x, y, w, h, 'S')
-
     const tc = opts.textColor ?? ([51, 65, 85] as RGB)
     doc.setTextColor(tc[0], tc[1], tc[2])
     doc.setFontSize(opts.fontSize ?? 8.5)
     doc.setFont('helvetica', opts.bold ? 'bold' : 'normal')
-
     const align = COL_ALIGN[col]
-    const tx =
-      align === 'center' ? x + w / 2
-      : align === 'right' ? x + w - PAD
-      : x + PAD
-
+    const tx = align === 'center' ? x + w / 2 : align === 'right' ? x + w - PAD : x + PAD
     const clipped = doc.splitTextToSize(text, w - PAD * 2)[0] as string
     doc.text(clipped, tx, y + h / 2 + 1.3, { align, baseline: 'middle' as const })
   }
@@ -216,8 +215,7 @@ export async function generateDailyPDFReport(
     HEADERS.forEach((h, col) =>
       drawCell(col, y, HEAD_H, h, {
         bold: true, fontSize: 8.5,
-        bgColor:   [79, 70, 229],
-        textColor: [255, 255, 255],
+        bgColor: [79, 70, 229], textColor: [255, 255, 255],
       })
     )
   }
@@ -228,16 +226,10 @@ export async function generateDailyPDFReport(
   // ── BODY ROWS ─────────────────────────────────────────────
   payments.forEach((p, i) => {
     if (curY + ROW_H > pageH - 26) {
-      doc.addPage()
-      curY = 14
-      drawHeader(curY)
-      curY += HEAD_H
+      doc.addPage(); curY = 14; drawHeader(curY); curY += HEAD_H
     }
-
-    const pending = pendingMap[p.customer_id] ?? 0
-    const isEven  = i % 2 === 1
-    const rowBg: RGB = isEven ? [248, 250, 252] : [255, 255, 255]
-
+    const pending = balances[p.customer_id] ?? 0
+    const rowBg: RGB = i % 2 === 1 ? [248, 250, 252] : [255, 255, 255]
     const cells = [
       String(i + 1),
       String(p.customers?.name  || 'Unknown'),
@@ -247,39 +239,31 @@ export async function generateDailyPDFReport(
       fmt(pending),
       String(p.notes || '-'),
     ]
-
     cells.forEach((text, col) => {
       drawCell(col, curY, ROW_H, text, {
-        bgColor:   rowBg,
-        bold:      col === 3 || col === 5,
+        bgColor: rowBg,
+        bold: col === 3 || col === 5,
         textColor:
-          col === 3 ? ([15, 23, 42]  as RGB)
+          col === 3 ? ([15, 23, 42] as RGB)
           : col === 5 ? ([180, 83, 9] as RGB)
-          : ([51, 65, 85]            as RGB),
+          : ([51, 65, 85] as RGB),
       })
     })
-
     curY += ROW_H
   })
 
   // ── GRAND TOTAL ROW ───────────────────────────────────────
-  if (curY + ROW_H + 2 > pageH - 26) {
-    doc.addPage()
-    curY = 14
-  }
-
+  if (curY + ROW_H + 2 > pageH - 26) { doc.addPage(); curY = 14 }
   ;['', '', 'GRAND TOTAL', fmt(grandTotal), '', '', ''].forEach((text, col) =>
     drawCell(col, curY, ROW_H + 2, text, {
       bold: true, fontSize: 9,
-      bgColor:   [238, 242, 255],
-      textColor: [67, 56, 202],
+      bgColor: [238, 242, 255], textColor: [67, 56, 202],
     })
   )
 
   // ── FOOTER ────────────────────────────────────────────────
   const totalPages =
     (doc.internal as unknown as { getNumberOfPages: () => number }).getNumberOfPages()
-
   for (let pg = 1; pg <= totalPages; pg++) {
     doc.setPage(pg)
     fillRect(0, pageH - 15, pageWidth, 15, [248, 250, 252])
@@ -298,7 +282,6 @@ export async function generateDailyPDFReport(
     }
   }
 
-  // ── SAVE ───────────────────────────────────────────────────
   const filename = `collection-report-${date}.pdf`
   doc.save(filename)
   return filename
