@@ -1,15 +1,13 @@
 /**
  * generateDailyPDFReport.ts
  *
- * SIMPLE USAGE — call computeBalances first, then pass the result here:
+ * SIMPLE USAGE:
  *
- *   import { computeBalances, generateDailyPDFReport } from './generateDailyPDFReport'
+ *   import { generateDailyPDFReport } from './generateDailyPDFReport'
  *
- *   const balances = await computeBalances(supabase, payments)
- *   await generateDailyPDFReport(date, payments, balances, 'My Business')
+ *   await generateDailyPDFReport(supabase, date, payments, 'My Business')
  *
- * computeBalances fetches from Supabase and returns a plain object like:
- *   { "customer-uuid-1": 49000, "customer-uuid-2": 12000 }
+ * computeBalances is still exported if you need it separately.
  */
 
 import dayjs from 'dayjs'
@@ -17,7 +15,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { PaymentWithCustomer } from '@/types'
 
 // ─────────────────────────────────────────────────────────────
-// STEP 1: Call this BEFORE generateDailyPDFReport
+// Compute balances (exported for external use too)
 // Returns { [customer_id]: pendingBalance }
 // ─────────────────────────────────────────────────────────────
 export async function computeBalances(
@@ -26,6 +24,8 @@ export async function computeBalances(
 ): Promise<Record<string, number>> {
   const customerIds = [...new Set(payments.map((p) => p.customer_id))]
   const balanceMap: Record<string, number> = {}
+
+  if (customerIds.length === 0) return balanceMap
 
   // Fetch total_amount for each customer
   const { data: customers, error: cErr } = await supabase
@@ -54,7 +54,9 @@ export async function computeBalances(
     const total = Number(c.total_amount ?? 0)
     const paid  = paidMap[c.id] ?? 0
     balanceMap[c.id] = Math.max(0, total - paid)
-    console.log(`[computeBalances] ${c.id}: total=${total}, paid=${paid}, balance=${balanceMap[c.id]}`)
+    console.log(
+      `[computeBalances] ${c.id}: total=${total}, paid=${paid}, balance=${balanceMap[c.id]}`
+    )
   }
 
   return balanceMap
@@ -75,14 +77,19 @@ function fmtBox(value: number): string {
 }
 
 // ─────────────────────────────────────────────────────────────
-// STEP 2: Generate the PDF
+// Generate the PDF  — now accepts supabase and fetches balances
+// internally so they are NEVER empty / stale.
 // ─────────────────────────────────────────────────────────────
 export async function generateDailyPDFReport(
+  supabase: SupabaseClient,          // ← NEW first param
   date: string,
   payments: PaymentWithCustomer[],
-  balances: Record<string, number>,   // ← from computeBalances()
   businessName: string = 'FinTrack Business'
 ) {
+  // ── Always compute fresh balances here ──────────────────────
+  const balances = await computeBalances(supabase, payments)
+  console.log('[generateDailyPDFReport] balances:', balances)
+
   const { jsPDF } = await import('jspdf')
 
   const doc       = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
@@ -110,6 +117,8 @@ export async function generateDailyPDFReport(
   const grandTotal   = cashTotal + upiTotal
   const uniqueIds    = [...new Set(payments.map((p) => p.customer_id))]
   const totalPending = uniqueIds.reduce((s, id) => s + (balances[id] ?? 0), 0)
+
+  console.log('[generateDailyPDFReport] totalPending:', totalPending)
 
   // ── HEADER ─────────────────────────────────────────────────
   fillRect(0, 0, pageWidth, 46, [79, 70, 229])
@@ -245,7 +254,8 @@ export async function generateDailyPDFReport(
         bold: col === 3 || col === 5,
         textColor:
           col === 3 ? ([15, 23, 42] as RGB)
-          : col === 5 ? ([180, 83, 9] as RGB)
+          : col === 5 && pending > 0 ? ([180, 83, 9] as RGB)   // orange if balance > 0
+          : col === 5 ? ([4, 120, 87] as RGB)                   // green if fully paid
           : ([51, 65, 85] as RGB),
       })
     })
