@@ -1,13 +1,9 @@
 /**
  * generateDailyPDFReport.ts
  *
- * SIMPLE USAGE:
- *
+ * USAGE:
  *   import { generateDailyPDFReport } from './generateDailyPDFReport'
- *
  *   await generateDailyPDFReport(supabase, date, payments, 'My Business')
- *
- * computeBalances is still exported if you need it separately.
  */
 
 import dayjs from 'dayjs'
@@ -15,8 +11,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { PaymentWithCustomer } from '@/types'
 
 // ─────────────────────────────────────────────────────────────
-// Compute balances (exported for external use too)
-// Returns { [customer_id]: pendingBalance }
+// Fetch pending_amount directly from customers table
+// (same field the CustomerCard UI uses — guaranteed to match)
 // ─────────────────────────────────────────────────────────────
 export async function computeBalances(
   supabase: SupabaseClient,
@@ -27,36 +23,19 @@ export async function computeBalances(
 
   if (customerIds.length === 0) return balanceMap
 
-  // Fetch total_amount for each customer
-  const { data: customers, error: cErr } = await supabase
+  const { data: customers, error } = await supabase
     .from('customers')
-    .select('id, total_amount')
+    .select('id, pending_amount')   // ← use the stored field, same as CustomerCard
     .in('id', customerIds)
 
-  if (cErr) console.error('[computeBalances] customers fetch error:', cErr.message)
-
-  // Fetch ALL payments ever made for these customers (not just today)
-  const { data: allPayments, error: pErr } = await supabase
-    .from('payments')
-    .select('customer_id, amount')
-    .in('customer_id', customerIds)
-
-  if (pErr) console.error('[computeBalances] payments fetch error:', pErr.message)
-
-  // Build paid map
-  const paidMap: Record<string, number> = {}
-  for (const p of allPayments ?? []) {
-    paidMap[p.customer_id] = (paidMap[p.customer_id] ?? 0) + Number(p.amount)
+  if (error) {
+    console.error('[computeBalances] error:', error.message)
+    return balanceMap
   }
 
-  // Compute balance per customer
   for (const c of customers ?? []) {
-    const total = Number(c.total_amount ?? 0)
-    const paid  = paidMap[c.id] ?? 0
-    balanceMap[c.id] = Math.max(0, total - paid)
-    console.log(
-      `[computeBalances] ${c.id}: total=${total}, paid=${paid}, balance=${balanceMap[c.id]}`
-    )
+    balanceMap[c.id] = Math.max(0, Number(c.pending_amount ?? 0))
+    console.log(`[computeBalances] customer ${c.id} → pending_amount: ${balanceMap[c.id]}`)
   }
 
   return balanceMap
@@ -77,18 +56,17 @@ function fmtBox(value: number): string {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Generate the PDF  — now accepts supabase and fetches balances
-// internally so they are NEVER empty / stale.
+// Generate the PDF
 // ─────────────────────────────────────────────────────────────
 export async function generateDailyPDFReport(
-  supabase: SupabaseClient,          // ← NEW first param
+  supabase: SupabaseClient,
   date: string,
   payments: PaymentWithCustomer[],
   businessName: string = 'FinTrack Business'
 ) {
-  // ── Always compute fresh balances here ──────────────────────
+  // Always fetch fresh balances internally
   const balances = await computeBalances(supabase, payments)
-  console.log('[generateDailyPDFReport] balances:', balances)
+  console.log('[generateDailyPDFReport] balances fetched:', balances)
 
   const { jsPDF } = await import('jspdf')
 
@@ -111,16 +89,16 @@ export async function generateDailyPDFReport(
     doc.roundedRect(x, y, w, h, r, r, 'F')
   }
 
-  // ── TOTALS ─────────────────────────────────────────────────
+  // ── TOTALS ────────────────────────────────────────────────
   const cashTotal    = payments.filter((p) => p.method === 'cash').reduce((s, p) => s + Number(p.amount), 0)
   const upiTotal     = payments.filter((p) => p.method === 'upi') .reduce((s, p) => s + Number(p.amount), 0)
   const grandTotal   = cashTotal + upiTotal
   const uniqueIds    = [...new Set(payments.map((p) => p.customer_id))]
   const totalPending = uniqueIds.reduce((s, id) => s + (balances[id] ?? 0), 0)
 
-  console.log('[generateDailyPDFReport] totalPending:', totalPending)
+  console.log('[generateDailyPDFReport] grandTotal:', grandTotal, '| totalPending:', totalPending)
 
-  // ── HEADER ─────────────────────────────────────────────────
+  // ── HEADER ────────────────────────────────────────────────
   fillRect(0, 0, pageWidth, 46, [79, 70, 229])
 
   doc.setTextColor(255, 255, 255)
@@ -143,7 +121,7 @@ export async function generateDailyPDFReport(
   doc.setTextColor(224, 231, 255)
   doc.text(dayjs(date).format('dddd'), pageWidth - MR, 28, { align: 'right' })
 
-  // ── 4 SUMMARY BOXES ────────────────────────────────────────
+  // ── 4 SUMMARY BOXES ───────────────────────────────────────
   const boxY = 53
   const boxH = 27
   const gap  = 3
@@ -237,26 +215,33 @@ export async function generateDailyPDFReport(
     if (curY + ROW_H > pageH - 26) {
       doc.addPage(); curY = 14; drawHeader(curY); curY += HEAD_H
     }
+
+    // pending_amount fetched from customers table — same as what the UI shows
     const pending = balances[p.customer_id] ?? 0
     const rowBg: RGB = i % 2 === 1 ? [248, 250, 252] : [255, 255, 255]
+
     const cells = [
       String(i + 1),
       String(p.customers?.name  || 'Unknown'),
       String(p.customers?.phone || '-'),
       fmt(Number(p.amount)),
       p.method.toUpperCase(),
-      fmt(pending),
+      fmt(pending),                           // ← now shows the real pending balance
       String(p.notes || '-'),
     ]
+
     cells.forEach((text, col) => {
       drawCell(col, curY, ROW_H, text, {
         bgColor: rowBg,
         bold: col === 3 || col === 5,
         textColor:
-          col === 3 ? ([15, 23, 42] as RGB)
-          : col === 5 && pending > 0 ? ([180, 83, 9] as RGB)   // orange if balance > 0
-          : col === 5 ? ([4, 120, 87] as RGB)                   // green if fully paid
-          : ([51, 65, 85] as RGB),
+          col === 3
+            ? ([15, 23, 42] as RGB)
+            : col === 5 && pending > 0
+              ? ([180, 83, 9]  as RGB)         // orange = still owes money
+              : col === 5
+                ? ([4, 120, 87] as RGB)        // green = fully paid
+                : ([51, 65, 85] as RGB),
       })
     })
     curY += ROW_H
