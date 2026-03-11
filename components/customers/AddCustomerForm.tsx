@@ -7,7 +7,7 @@ import { useAddCustomer } from '@/hooks/useCustomers'
 import type { AddCustomerForm } from '@/types'
 import { calculateTotalAmount, calculateDailyAmount, today } from '@/lib/utils'
 import { formatCurrency } from '@/lib/utils'
-import { UserPlus } from 'lucide-react'
+import { UserPlus, User, FileText, Calculator, AlignLeft } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const schema = z.object({
@@ -33,15 +33,18 @@ interface FieldProps {
 function Field({ label, error, children, hint }: FieldProps) {
   return (
     <div>
-      <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1.5 block">
+      <label className="text-sm font-semibold text-slate-700 mb-2 block">
         {label}
       </label>
       {children}
-      {hint && !error && <p className="text-xs text-slate-400 mt-1">{hint}</p>}
-      {error && <p className="text-xs text-rose-500 mt-1">{error}</p>}
+      {hint && !error && <p className="text-xs text-slate-500 mt-2 font-medium">{hint}</p>}
+      {error && <p className="text-xs text-rose-500 mt-2 font-medium">{error}</p>}
     </div>
   )
 }
+
+// Reusable input class for consistency
+const inputBaseClasses = "w-full px-4 py-3.5 rounded-2xl border border-slate-200 bg-slate-50 text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all shadow-sm"
 
 export function AddCustomerForm() {
   const { mutate: addCustomer, isPending } = useAddCustomer()
@@ -80,29 +83,30 @@ export function AddCustomerForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-5 p-4">
+    <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+      
       {/* Calculation preview banner */}
       {totalAmount > 0 && (
-        <div className="bg-slate-900 rounded-xl p-4 text-white animate-fade-in">
-          <p className="text-xs text-slate-400 mb-3 font-medium uppercase tracking-wide">
-            Loan Summary Preview
+        <div className="bg-indigo-600 rounded-3xl p-5 text-white shadow-lg shadow-indigo-200 animate-in fade-in slide-in-from-top-4 duration-300">
+          <p className="text-xs text-indigo-200 mb-4 font-bold uppercase tracking-wider flex items-center gap-1.5">
+            <Calculator size={14} /> Loan Summary
           </p>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-3 gap-4 divide-x divide-indigo-500/50">
             <div>
-              <p className="text-xs text-slate-400">Total</p>
-              <p className="text-base font-bold text-amber-400">
+              <p className="text-xs text-indigo-200 font-medium mb-1">Total</p>
+              <p className="text-lg font-extrabold text-white">
                 {formatCurrency(totalAmount)}
               </p>
             </div>
-            <div>
-              <p className="text-xs text-slate-400">Daily</p>
-              <p className="text-base font-bold text-emerald-400">
+            <div className="pl-4">
+              <p className="text-xs text-indigo-200 font-medium mb-1">Daily</p>
+              <p className="text-lg font-extrabold text-emerald-300">
                 {formatCurrency(dailyAmount)}
               </p>
             </div>
-            <div>
-              <p className="text-xs text-slate-400">Days</p>
-              <p className="text-base font-bold text-blue-300">
+            <div className="pl-4">
+              <p className="text-xs text-indigo-200 font-medium mb-1">Days</p>
+              <p className="text-lg font-extrabold text-amber-300">
                 {durationDays || 100}
               </p>
             </div>
@@ -111,17 +115,17 @@ export function AddCustomerForm() {
       )}
 
       {/* Personal info */}
-      <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-4">
-        <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-          Customer Info
-        </p>
+      <div className="bg-white rounded-3xl border border-slate-100 p-5 shadow-sm space-y-5">
+        <h3 className="text-sm font-extrabold text-slate-900 uppercase tracking-wider flex items-center gap-2 mb-2">
+          <User size={16} className="text-indigo-500" /> Customer Info
+        </h3>
 
         <Field label="Full Name" error={errors.name?.message}>
           <input
             type="text"
             placeholder="e.g. Rajesh Kumar"
             {...register('name')}
-            className="mobile-input"
+            className={inputBaseClasses}
             autoCapitalize="words"
           />
         </Field>
@@ -132,7 +136,7 @@ export function AddCustomerForm() {
             inputMode="numeric"
             placeholder="10-digit mobile number"
             {...register('phone')}
-            className="mobile-input"
+            className={inputBaseClasses}
           />
         </Field>
 
@@ -141,23 +145,20 @@ export function AddCustomerForm() {
             type="text"
             placeholder="Street, Area, City"
             {...register('address')}
-            className="mobile-input"
+            className={inputBaseClasses}
           />
         </Field>
       </div>
 
       {/* Loan details */}
-      <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-4">
-        <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-          Loan Details
-        </p>
+      <div className="bg-white rounded-3xl border border-slate-100 p-5 shadow-sm space-y-5">
+        <h3 className="text-sm font-extrabold text-slate-900 uppercase tracking-wider flex items-center gap-2 mb-2">
+          <FileText size={16} className="text-indigo-500" /> Loan Details
+        </h3>
 
-        <Field
-          label="Loan Amount (₹)"
-          error={errors.loan_amount?.message}
-        >
+        <Field label="Loan Amount (₹)" error={errors.loan_amount?.message}>
           <div className="relative">
-            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 font-bold">
+            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">
               ₹
             </span>
             <input
@@ -165,7 +166,7 @@ export function AddCustomerForm() {
               inputMode="numeric"
               placeholder="10000"
               {...register('loan_amount', { valueAsNumber: true })}
-              className="mobile-input pl-8"
+              className={cn(inputBaseClasses, "pl-9")}
             />
           </div>
         </Field>
@@ -176,7 +177,7 @@ export function AddCustomerForm() {
           hint="Total interest to be added on top of loan"
         >
           <div className="relative">
-            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 font-bold">
+            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">
               ₹
             </span>
             <input
@@ -184,7 +185,7 @@ export function AddCustomerForm() {
               inputMode="numeric"
               placeholder="2000"
               {...register('interest', { valueAsNumber: true })}
-              className="mobile-input pl-8"
+              className={cn(inputBaseClasses, "pl-9")}
             />
           </div>
         </Field>
@@ -199,7 +200,7 @@ export function AddCustomerForm() {
             inputMode="numeric"
             placeholder="100"
             {...register('duration_days', { valueAsNumber: true })}
-            className="mobile-input"
+            className={inputBaseClasses}
           />
         </Field>
 
@@ -207,20 +208,23 @@ export function AddCustomerForm() {
           <input
             type="date"
             {...register('start_date')}
-            className="mobile-input"
+            className={inputBaseClasses}
             max={today()}
           />
         </Field>
       </div>
 
       {/* Notes */}
-      <div className="bg-white rounded-xl border border-slate-200 p-4">
+      <div className="bg-white rounded-3xl border border-slate-100 p-5 shadow-sm space-y-5">
+        <h3 className="text-sm font-extrabold text-slate-900 uppercase tracking-wider flex items-center gap-2 mb-2">
+          <AlignLeft size={16} className="text-indigo-500" /> Additional Notes
+        </h3>
         <Field label="Notes (Optional)" error={errors.notes?.message}>
           <textarea
-            placeholder="Any additional notes..."
+            placeholder="Any specific agreements, references, or context..."
             {...register('notes')}
-            rows={2}
-            className="mobile-input resize-none py-3"
+            rows={3}
+            className={cn(inputBaseClasses, "resize-none py-4")}
           />
         </Field>
       </div>
@@ -229,21 +233,21 @@ export function AddCustomerForm() {
         type="submit"
         disabled={isPending}
         className={cn(
-          'btn-action w-full',
+          'w-full py-4 px-4 rounded-2xl flex items-center justify-center gap-2 font-bold transition-all shadow-sm',
           isPending
-            ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
-            : 'bg-slate-900 text-white shadow-lg'
+            ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200'
+            : 'bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white shadow-indigo-200'
         )}
       >
         {isPending ? (
-          <span className="flex items-center gap-2">
-            <span className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" />
+          <>
+            <span className="w-5 h-5 border-2 border-slate-300 border-t-slate-500 rounded-full animate-spin" />
             Adding Customer...
-          </span>
+          </>
         ) : (
           <>
             <UserPlus size={20} />
-            Add Customer
+            Create Customer Profile
           </>
         )}
       </button>

@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { formatCurrency, calculateProgress } from '@/lib/utils'
 import type { CustomerSummary } from '@/types'
-import { Phone, ChevronRight } from 'lucide-react'
+import { Phone, ChevronRight, TrendingUp, CheckCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface CustomerCardProps {
@@ -15,54 +15,64 @@ export function CustomerCard({ customer }: CustomerCardProps) {
   return (
     <Link
       href={`/customers/${customer.id}`}
-      className="block bg-white rounded-xl border border-slate-200 p-4 active:bg-slate-50 transition-colors shadow-sm"
+      className="block bg-white rounded-2xl border border-slate-100 p-5 hover:border-indigo-100 hover:shadow-md transition-all duration-200 group relative overflow-hidden shadow-sm"
     >
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-4">
         {/* Avatar */}
         <div
           className={cn(
-            'w-11 h-11 rounded-full flex items-center justify-center text-white font-bold text-lg flex-shrink-0',
-            isCompleted ? 'bg-emerald-500' : 'bg-slate-900'
+            'w-12 h-12 rounded-xl flex items-center justify-center font-extrabold text-lg flex-shrink-0 shadow-sm',
+            isCompleted 
+              ? 'bg-emerald-100 text-emerald-700' 
+              : 'bg-indigo-100 text-indigo-700'
           )}
         >
           {customer.name.charAt(0).toUpperCase()}
         </div>
 
-        {/* Info */}
+        {/* Info Container */}
         <div className="flex-1 min-w-0">
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="font-bold text-slate-900 truncate">{customer.name}</h3>
-            <div className="flex items-center gap-1">
+          <div className="flex items-center justify-between gap-2 mb-0.5">
+            <h3 className="font-extrabold text-slate-900 truncate text-base group-hover:text-indigo-700 transition-colors">
+              {customer.name}
+            </h3>
+            
+            {/* Status Badge */}
+            <div className="flex items-center gap-1.5">
               <span
                 className={cn(
-                  'text-xs font-semibold px-2 py-0.5 rounded-full flex-shrink-0',
+                  'text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md flex items-center gap-1 flex-shrink-0',
                   isCompleted
-                    ? 'bg-emerald-100 text-emerald-700'
-                    : 'bg-blue-100 text-blue-700'
+                    ? 'bg-emerald-50 text-emerald-700'
+                    : 'bg-indigo-50 text-indigo-700'
                 )}
               >
-                {isCompleted ? '✓ Done' : 'Active'}
+                {isCompleted ? (
+                  <><CheckCircle size={10} strokeWidth={3} /> Done</>
+                ) : (
+                  <><TrendingUp size={10} strokeWidth={3} /> Active</>
+                )}
               </span>
-              <ChevronRight size={16} className="text-slate-400" />
+              <ChevronRight size={18} className="text-slate-300 group-hover:text-indigo-400 transition-colors transform group-hover:translate-x-0.5" />
             </div>
           </div>
 
-          <div className="flex items-center gap-1 text-xs text-slate-500 mt-0.5">
-            <Phone size={11} />
+          <div className="flex items-center gap-1.5 text-xs font-medium text-slate-500 mb-4">
+            <Phone size={12} className="text-slate-400" />
             <span>{customer.phone}</span>
           </div>
 
-          {/* Progress bar */}
-          <div className="mt-3">
-            <div className="flex justify-between text-xs mb-1">
-              <span className="text-slate-500">
-                Paid: <span className="font-semibold text-slate-700">{formatCurrency(customer.paid_amount)}</span>
+          {/* Progress Section */}
+          <div>
+            <div className="flex justify-between text-xs mb-1.5">
+              <span className="text-slate-500 font-medium">
+                Paid: <span className="font-bold text-slate-900">{formatCurrency(customer.paid_amount)}</span>
               </span>
-              <span className="text-slate-500">
+              <span className="text-slate-500 font-medium">
                 Pending:{' '}
                 <span
                   className={cn(
-                    'font-semibold',
+                    'font-bold',
                     customer.pending_amount > 0 ? 'text-rose-600' : 'text-emerald-600'
                   )}
                 >
@@ -70,17 +80,22 @@ export function CustomerCard({ customer }: CustomerCardProps) {
                 </span>
               </span>
             </div>
-            <div className="progress-bar">
+            
+            {/* Tailwind Progress Bar */}
+            <div className="h-2 w-full rounded-full bg-slate-100 overflow-hidden relative">
               <div
                 className={cn(
-                  'progress-bar-fill',
-                  isCompleted ? 'bg-emerald-500' : 'bg-blue-600'
+                  'h-full rounded-full transition-all duration-1000 ease-out',
+                  isCompleted ? 'bg-emerald-500' : 'bg-indigo-500'
                 )}
                 style={{ width: `${progress}%` }}
               />
             </div>
-            <div className="flex justify-between text-xs mt-1 text-slate-400">
-              <span>{Math.round(progress)}% paid</span>
+            
+            <div className="flex justify-between text-[11px] font-medium mt-1.5 text-slate-400">
+              <span className={cn(isCompleted && "text-emerald-600 font-bold")}>
+                {Math.round(progress)}% paid
+              </span>
               {!isCompleted && (
                 <span>{customer.remaining_days} days left</span>
               )}
@@ -92,16 +107,28 @@ export function CustomerCard({ customer }: CustomerCardProps) {
   )
 }
 
-// Skeleton
+// Skeleton matched to the new rounded-2xl padding and sizing
 export function CustomerCardSkeleton() {
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-4">
-      <div className="flex gap-3">
-        <div className="w-11 h-11 shimmer rounded-full" />
+    <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm">
+      <div className="flex items-start gap-4">
+        {/* Avatar Skeleton */}
+        <div className="w-12 h-12 bg-slate-100 animate-pulse rounded-xl flex-shrink-0" />
+        
+        {/* Content Skeleton */}
         <div className="flex-1">
-          <div className="h-4 w-32 shimmer rounded mb-2" />
-          <div className="h-3 w-24 shimmer rounded mb-3" />
-          <div className="h-2 shimmer rounded" />
+          <div className="flex justify-between items-center mb-2">
+            <div className="h-5 w-32 bg-slate-100 animate-pulse rounded-md" />
+            <div className="h-5 w-16 bg-slate-100 animate-pulse rounded-md" />
+          </div>
+          <div className="h-3 w-24 bg-slate-100 animate-pulse rounded-md mb-5" />
+          
+          {/* Progress Skeleton */}
+          <div className="flex justify-between mb-2">
+            <div className="h-3 w-20 bg-slate-100 animate-pulse rounded-md" />
+            <div className="h-3 w-20 bg-slate-100 animate-pulse rounded-md" />
+          </div>
+          <div className="h-2 w-full bg-slate-100 animate-pulse rounded-full" />
         </div>
       </div>
     </div>

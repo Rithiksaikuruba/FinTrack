@@ -29,89 +29,97 @@ export default function CustomersPage() {
 
   return (
     <AppLayout>
-      <PageHeader
-        title="Customers"
-        subtitle={`${customers.length} found`}
-        action={
-          <Link
-            href="/add-customer"
-            className="flex items-center gap-1.5 bg-amber-400 text-slate-900 text-sm font-bold px-3 py-2 rounded-xl"
-          >
-            <UserPlus size={15} />
-            Add
-          </Link>
-        }
-      />
-
-      {/* Search */}
-      <div className="px-4 py-3 bg-white border-b border-slate-200 sticky top-[60px] z-30">
-        <div className="relative">
-          <Search
-            size={16}
-            className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
-          />
-          <input
-            type="text"
-            placeholder="Search name or phone..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full h-11 pl-10 pr-4 rounded-xl border-2 border-slate-200 text-sm focus:border-blue-900 outline-none transition-colors bg-slate-50"
-          />
-        </div>
-
-        {/* Status tabs */}
-        <div className="flex gap-2 mt-3">
-          {STATUS_TABS.map((tab) => (
-            <button
-              key={tab.value}
-              onClick={() => setStatus(tab.value as CustomerFilters['status'])}
-              className={cn(
-                'px-4 py-1.5 rounded-full text-xs font-semibold transition-all',
-                status === tab.value
-                  ? 'bg-slate-900 text-white'
-                  : 'bg-slate-100 text-slate-600'
-              )}
+      <div className="min-h-screen bg-slate-50 pb-24">
+        <PageHeader
+          title="Customers"
+          subtitle={`${customers.length} found`}
+          action={
+            <Link
+              href="/add-customer"
+              className="flex items-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-sm font-bold px-4 py-2 rounded-xl transition-colors shadow-sm"
             >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-      </div>
+              <UserPlus size={16} />
+              Add
+            </Link>
+          }
+        />
 
-      {/* Customer list */}
-      <div className="p-4 space-y-3">
-        {isLoading && (
-          <>
-            <CustomerCardSkeleton />
-            <CustomerCardSkeleton />
-            <CustomerCardSkeleton />
-          </>
-        )}
-
-        {!isLoading && customers.length === 0 && (
-          <div className="text-center py-16">
-            <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
-              <Users size={28} className="text-slate-400" />
+        {/* ── SEARCH & FILTERS (Sticky) ─────────────────── */}
+        <div className="px-6 py-4 bg-slate-50/90 backdrop-blur-md border-b border-slate-200/50 sticky top-0 z-30">
+          <div className="max-w-lg mx-auto w-full">
+            {/* Search Input */}
+            <div className="relative mb-4">
+              <Search
+                size={18}
+                className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"
+              />
+              <input
+                type="text"
+                placeholder="Search name or phone..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full h-12 pl-11 pr-4 rounded-2xl border border-slate-200 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all bg-white placeholder:text-slate-400 text-slate-900 font-medium shadow-sm"
+              />
             </div>
-            <p className="text-slate-600 font-semibold">No customers found</p>
-            <p className="text-slate-400 text-sm mt-1">
-              {search ? 'Try a different search' : 'Add your first customer'}
-            </p>
-            {!search && (
-              <Link
-                href="/add-customer"
-                className="inline-flex items-center gap-2 mt-4 bg-slate-900 text-white px-5 py-2.5 rounded-xl font-semibold text-sm"
-              >
-                <UserPlus size={16} />
-                Add Customer
-              </Link>
-            )}
-          </div>
-        )}
 
-        {customers.map((c) => (
-          <CustomerCard key={c.id} customer={c} />
-        ))}
+            {/* Status Tabs */}
+            <div className="flex gap-1 bg-slate-200/60 p-1 rounded-xl">
+              {STATUS_TABS.map((tab) => (
+                <button
+                  key={tab.value}
+                  onClick={() => setStatus(tab.value as CustomerFilters['status'])}
+                  className={cn(
+                    'flex-1 py-2 rounded-lg text-sm font-bold transition-all',
+                    status === tab.value
+                      ? 'bg-white text-indigo-700 shadow-sm ring-1 ring-black/5'
+                      : 'text-slate-500 hover:text-slate-700'
+                  )}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* ── CUSTOMER LIST ─────────────────────────────── */}
+        <div className="p-6 max-w-lg mx-auto w-full space-y-4">
+          {isLoading && (
+            <>
+              <CustomerCardSkeleton />
+              <CustomerCardSkeleton />
+              <CustomerCardSkeleton />
+            </>
+          )}
+
+          {!isLoading && customers.length === 0 && (
+            <div className="text-center py-16 animate-in fade-in zoom-in-95 duration-300">
+              <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center mx-auto mb-5 shadow-sm border border-slate-100">
+                <Users size={32} className="text-slate-300" />
+              </div>
+              <p className="text-slate-900 font-bold text-lg">No customers found</p>
+              <p className="text-slate-500 text-sm mt-1 font-medium">
+                {search ? 'Try adjusting your search terms' : 'Add your first customer to get started'}
+              </p>
+              {!search && (
+                <Link
+                  href="/add-customer"
+                  className="inline-flex items-center justify-center gap-2 mt-6 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white px-6 py-3.5 rounded-xl font-bold text-sm shadow-sm shadow-indigo-200 transition-all"
+                >
+                  <UserPlus size={18} />
+                  Add Customer
+                </Link>
+              )}
+            </div>
+          )}
+
+          {/* Render List */}
+          <div className="space-y-3">
+            {customers.map((c) => (
+              <CustomerCard key={c.id} customer={c} />
+            ))}
+          </div>
+        </div>
       </div>
     </AppLayout>
   )

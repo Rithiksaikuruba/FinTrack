@@ -48,43 +48,45 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-900 flex flex-col">
-      {/* Top section */}
-      <div className="flex-1 flex flex-col items-center justify-center px-6 pb-8">
-        {/* Logo */}
-        <div className="mb-10 text-center">
-          <div className="w-20 h-20 bg-amber-400 rounded-3xl flex items-center justify-center mx-auto mb-4 shadow-2xl">
-            <TrendingUp size={40} strokeWidth={2.5} className="text-slate-900" />
+    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6">
+      
+      <div className="w-full max-w-md flex flex-col items-center">
+        {/* Logo Section */}
+        <div className="mb-8 text-center">
+          <div className="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-5 shadow-lg shadow-indigo-200">
+            <TrendingUp size={32} strokeWidth={2.5} className="text-white" />
           </div>
-          <h1 className="text-3xl font-bold text-white tracking-tight">FinTrack</h1>
-          <p className="text-slate-400 mt-1 text-sm">Loan Collection Manager</p>
+          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">FinTrack</h1>
+          <p className="text-slate-500 mt-2 text-sm font-medium">Loan Collection Manager</p>
         </div>
 
-        {/* Card */}
-        <div className="w-full max-w-sm bg-white rounded-2xl p-6 shadow-xl">
-          <h2 className="text-lg font-bold text-slate-900 mb-1">Sign In</h2>
-          <p className="text-sm text-slate-500 mb-6">Enter your credentials to continue</p>
+        {/* Form Card */}
+        <div className="w-full bg-white rounded-3xl p-8 shadow-sm border border-slate-100">
+          <div className="mb-8 text-center">
+            <h2 className="text-xl font-bold text-slate-900">Welcome back</h2>
+            <p className="text-sm text-slate-500 mt-1">Enter your credentials to continue</p>
+          </div>
 
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
             <div>
-              <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1.5 block">
-                Email
+              <label className="text-sm font-semibold text-slate-700 mb-2 block">
+                Email Address
               </label>
               <input
                 type="email"
                 inputMode="email"
                 placeholder="you@example.com"
                 {...register('email')}
-                className="mobile-input"
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
                 autoComplete="email"
               />
               {errors.email && (
-                <p className="text-xs text-rose-500 mt-1">{errors.email.message}</p>
+                <p className="text-sm text-rose-500 mt-2 font-medium">{errors.email.message}</p>
               )}
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1.5 block">
+              <label className="text-sm font-semibold text-slate-700 mb-2 block">
                 Password
               </label>
               <div className="relative">
@@ -92,35 +94,35 @@ export default function LoginPage() {
                   type={showPassword ? 'text' : 'password'}
                   placeholder="••••••••"
                   {...register('password')}
-                  className="mobile-input pr-12"
+                  className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all pr-12"
                   autoComplete="current-password"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword((v) => !v)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400"
+                  className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
                 >
-                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
                 </button>
               </div>
               {errors.password && (
-                <p className="text-xs text-rose-500 mt-1">{errors.password.message}</p>
+                <p className="text-sm text-rose-500 mt-2 font-medium">{errors.password.message}</p>
               )}
             </div>
 
             <button
               type="submit"
               disabled={loading}
-              className="btn-action w-full mt-2 bg-slate-900 text-white disabled:opacity-50"
+              className="w-full mt-2 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white rounded-xl py-3.5 px-4 flex items-center justify-center gap-2 font-semibold transition-all shadow-sm disabled:opacity-70 disabled:cursor-not-allowed"
             >
               {loading ? (
-                <span className="flex items-center gap-2">
-                  <span className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" />
+                <>
+                  <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                   Signing in...
-                </span>
+                </>
               ) : (
                 <>
-                  <LogIn size={18} />
+                  <LogIn size={20} />
                   Sign In
                 </>
               )}
@@ -128,7 +130,8 @@ export default function LoginPage() {
           </form>
         </div>
 
-        <p className="text-slate-600 text-xs mt-6 text-center">
+        {/* Footer */}
+        <p className="text-slate-400 text-sm mt-8 text-center font-medium">
           Single-owner finance tracking system
         </p>
       </div>

@@ -24,26 +24,40 @@ export function PageHeader({
   return (
     <header
       className={cn(
-        'sticky top-0 z-40 bg-slate-900 text-white px-4 pt-safe',
+        'sticky top-0 z-40 bg-white/80 backdrop-blur-xl border-b border-slate-100/80 shadow-sm pt-safe transition-all',
         className
       )}
     >
-      <div className="flex items-center gap-3 py-4">
+      <div className="max-w-lg mx-auto w-full px-6 py-4 flex items-center gap-4">
+        {/* Back Button */}
         {backHref && (
           <button
             onClick={() => router.back()}
-            className="flex items-center justify-center w-9 h-9 rounded-full bg-white/10 active:bg-white/20 transition-colors"
+            className="flex items-center justify-center w-10 h-10 rounded-full bg-slate-50 hover:bg-slate-100 active:scale-95 text-slate-600 transition-all border border-slate-200/60 flex-shrink-0 shadow-sm"
+            aria-label="Go back"
           >
-            <ArrowLeft size={18} />
+            <ArrowLeft size={20} strokeWidth={2.5} />
           </button>
         )}
-        <div className="flex-1 min-w-0">
-          <h1 className="text-lg font-bold tracking-tight truncate">{title}</h1>
+        
+        {/* Title & Subtitle */}
+        <div className="flex-1 min-w-0 flex flex-col justify-center">
+          <h1 className="text-xl font-extrabold text-slate-900 tracking-tight truncate">
+            {title}
+          </h1>
           {subtitle && (
-            <p className="text-xs text-slate-400 truncate mt-0.5">{subtitle}</p>
+            <p className="text-sm font-medium text-slate-500 truncate mt-0.5">
+              {subtitle}
+            </p>
           )}
         </div>
-        {action && <div className="flex-shrink-0">{action}</div>}
+        
+        {/* Action Area */}
+        {action && (
+          <div className="flex-shrink-0 ml-2">
+            {action}
+          </div>
+        )}
       </div>
     </header>
   )

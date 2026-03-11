@@ -6,26 +6,32 @@
 
 @layer base {
   :root {
-    --background: 220 20% 97%;
-    --foreground: 220 25% 10%;
-    --card: 0 0% 100%;
-    --card-foreground: 220 25% 10%;
+    /* Updated to the new Slate & Indigo light theme palette */
+    --background: 210 40% 98%; /* slate-50 */
+    --foreground: 222.2 84% 4.9%; /* slate-900 */
+    --card: 0 0% 100%; /* white */
+    --card-foreground: 222.2 84% 4.9%;
     --popover: 0 0% 100%;
-    --popover-foreground: 220 25% 10%;
-    --primary: 221 83% 20%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 220 15% 93%;
-    --secondary-foreground: 220 25% 20%;
-    --muted: 220 15% 93%;
-    --muted-foreground: 220 10% 50%;
-    --accent: 43 96% 56%;
-    --accent-foreground: 220 25% 10%;
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 220 15% 88%;
-    --input: 220 15% 88%;
-    --ring: 221 83% 20%;
-    --radius: 0.625rem;
+    --popover-foreground: 222.2 84% 4.9%;
+    
+    /* Primary brand color updated to Indigo-600 */
+    --primary: 243 75% 59%; 
+    --primary-foreground: 210 40% 98%;
+    
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 243 75% 59%; /* Indigo focus rings */
+    
+    /* Increased base radius to match our rounded-2xl/3xl vibe */
+    --radius: 1rem; 
   }
 
   * {
@@ -39,7 +45,7 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  /* Number inputs - remove spinners */
+  /* Number inputs - remove native spinners for a cleaner UI */
   input[type='number']::-webkit-inner-spin-button,
   input[type='number']::-webkit-outer-spin-button {
     -webkit-appearance: none;
@@ -50,75 +56,14 @@
   }
 }
 
-@layer components {
-  /* Stat card with top accent */
-  .stat-card {
-    @apply bg-white rounded-xl border border-slate-200 p-4 relative overflow-hidden shadow-sm;
+@layer utilities {
+  /* Bottom nav safe area for Mobile Safari / PWAs */
+  .bottom-safe {
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
   }
-  .stat-card::before {
-    content: '';
-    @apply absolute top-0 left-0 right-0 h-1 rounded-t-xl;
+  
+  /* Optional: Better text wrapping for titles */
+  .text-balance {
+    text-wrap: balance;
   }
-  .stat-card-green::before { @apply bg-emerald-500; }
-  .stat-card-blue::before { @apply bg-blue-500; }
-  .stat-card-amber::before { @apply bg-amber-500; }
-  .stat-card-rose::before { @apply bg-rose-500; }
-  .stat-card-primary::before { @apply bg-[hsl(221,83%,20%)]; }
-
-  /* Large action button */
-  .btn-action {
-    @apply flex items-center justify-center gap-2 rounded-xl font-semibold text-base 
-           min-h-[52px] px-6 transition-all duration-150 active:scale-[0.97];
-  }
-
-  /* Payment method pill */
-  .method-cash {
-    @apply bg-emerald-100 text-emerald-700 text-xs font-semibold px-2 py-0.5 rounded-full;
-  }
-  .method-upi {
-    @apply bg-blue-100 text-blue-700 text-xs font-semibold px-2 py-0.5 rounded-full;
-  }
-
-  /* Progress bar */
-  .progress-bar {
-    @apply h-2 rounded-full bg-slate-100 overflow-hidden;
-  }
-  .progress-bar-fill {
-    @apply h-full rounded-full transition-all duration-500;
-  }
-
-  /* Mobile input */
-  .mobile-input {
-    @apply w-full min-h-[52px] rounded-xl border-2 border-slate-200 px-4 text-base 
-           focus:border-blue-900 focus:ring-0 outline-none transition-colors;
-  }
-
-  /* Subtle shimmer animation for loading */
-  .shimmer {
-    @apply relative overflow-hidden bg-slate-100;
-  }
-  .shimmer::after {
-    content: '';
-    @apply absolute inset-0;
-    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.5), transparent);
-    animation: shimmer 1.5s infinite;
-  }
-  @keyframes shimmer {
-    0% { transform: translateX(-100%); }
-    100% { transform: translateX(100%); }
-  }
-}
-
-/* Smooth page transitions */
-.page-enter {
-  animation: slide-up 0.25s ease-out;
-}
-@keyframes slide-up {
-  from { transform: translateY(8px); opacity: 0; }
-  to { transform: translateY(0); opacity: 1; }
-}
-
-/* Bottom nav safe area */
-.bottom-safe {
-  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
 }
