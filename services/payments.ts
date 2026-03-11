@@ -7,7 +7,6 @@ import type {
   DashboardStats,
   MissedPaymentCustomer,
 } from '@/types'
-import dayjs from 'dayjs'
 
 // ============================================================
 // ADD PAYMENT
@@ -32,17 +31,14 @@ export async function addPayment(form: AddPaymentForm): Promise<Payment> {
 }
 
 // ============================================================
-// FETCH PAYMENTS (with customer data)
-// NOTE: paid_amount and pending_amount are NOT stored columns —
-// they are computed here by summing all payments per customer.
+// FETCH PAYMENTS (with customer data + computed balance)
 // ============================================================
 export async function fetchPayments(
   filters?: PaymentFilters
 ): Promise<PaymentWithCustomer[]> {
   const supabase = getSupabaseClient()
 
-  // Step 1: Fetch the filtered payments with customer join
-  // (only select columns that actually exist on the customers table)
+  // Step 1: Fetch filtered payments (minimal join — only safe columns)
   let query = supabase
     .from('payments')
     .select(`
@@ -50,38 +46,40 @@ export async function fetchPayments(
       customers (
         name,
         phone,
-        daily_amount,
-        total_amount
+        daily_amount
       )
     `)
     .order('created_at', { ascending: false })
 
-  if (filters?.date) {
-    query = query.eq('date', filters.date)
-  }
-
-  if (filters?.method && filters.method !== 'all') {
-    query = query.eq('method', filters.method)
-  }
-
-  if (filters?.customer_id) {
-    query = query.eq('customer_id', filters.customer_id)
-  }
+  if (filters?.date)       query = query.eq('date', filters.date)
+  if (filters?.method && filters.method !== 'all') query = query.eq('method', filters.method)
+  if (filters?.customer_id) query = query.eq('customer_id', filters.customer_id)
 
   const { data, error } = await query
   if (error) throw new Error(error.message)
 
   const payments = (data ?? []) as Array<
-    Payment & { customers: { name: string; phone: string; daily_amount: number; total_amount: number } | null }
+    Payment & { customers: { name: string; phone: string; daily_amount: number } | null }
   >
 
   if (payments.length === 0) return []
 
-  // Step 2: Get every unique customer_id from the result set
   const customerIds = [...new Set(payments.map((p) => p.customer_id))]
 
-  // Step 3: Sum ALL historical payments for those customers
-  // (not just today's — we need lifetime paid to compute balance)
+  // Step 2: Fetch total_amount directly from customers table (bypasses join RLS issues)
+  const { data: customerRows, error: custError } = await supabase
+    .from('customers')
+    .select('id, total_amount')
+    .in('id', customerIds)
+
+  if (custError) throw new Error(custError.message)
+
+  const totalAmountMap: Record<string, number> = {}
+  for (const c of customerRows ?? []) {
+    totalAmountMap[c.id] = Number(c.total_amount ?? 0)
+  }
+
+  // Step 3: Sum ALL historical payments per customer to get lifetime paid
   const { data: allPaid, error: paidError } = await supabase
     .from('payments')
     .select('customer_id, amount')
@@ -89,23 +87,22 @@ export async function fetchPayments(
 
   if (paidError) throw new Error(paidError.message)
 
-  // Step 4: Build a map of customer_id → total paid (lifetime)
   const paidMap: Record<string, number> = {}
   for (const p of allPaid ?? []) {
     paidMap[p.customer_id] = (paidMap[p.customer_id] ?? 0) + Number(p.amount)
   }
 
-  // Step 5: Attach computed paid_amount & pending_amount to each payment row
+  // Step 4: Attach computed fields to each payment row
   return payments.map((p) => {
-    const totalAmount = Number(p.customers?.total_amount ?? 0)
+    const totalAmount = totalAmountMap[p.customer_id] ?? 0
     const paidAmount  = paidMap[p.customer_id] ?? 0
     const pending     = Math.max(0, totalAmount - paidAmount)
 
     return {
       ...p,
       customers: {
-        name:           p.customers?.name    ?? 'Unknown',
-        phone:          p.customers?.phone   ?? '-',
+        name:           p.customers?.name         ?? 'Unknown',
+        phone:          p.customers?.phone        ?? '-',
         daily_amount:   p.customers?.daily_amount ?? 0,
         total_amount:   totalAmount,
         paid_amount:    paidAmount,
@@ -146,7 +143,6 @@ export async function deletePayment(id: string): Promise<void> {
 export async function fetchDashboardStats(date: string): Promise<DashboardStats> {
   const supabase = getSupabaseClient()
 
-  // Today's payments
   const { data: todayPayments, error: p1 } = await supabase
     .from('payments')
     .select('amount, method, customer_id')
@@ -154,7 +150,6 @@ export async function fetchDashboardStats(date: string): Promise<DashboardStats>
 
   if (p1) throw new Error(p1.message)
 
-  // Active customers
   const { data: activeCustomers, error: p2 } = await supabase
     .from('customers')
     .select('id, daily_amount')
@@ -165,21 +160,13 @@ export async function fetchDashboardStats(date: string): Promise<DashboardStats>
   const payments  = todayPayments  || []
   const customers = activeCustomers || []
 
-  const total_collected_today = payments.reduce((s, p) => s + p.amount, 0)
-  const cash_today = payments
-    .filter((p) => p.method === 'cash')
-    .reduce((s, p) => s + p.amount, 0)
-  const upi_today = payments
-    .filter((p) => p.method === 'upi')
-    .reduce((s, p) => s + p.amount, 0)
-
-  const paid_customer_ids     = new Set(payments.map((p) => p.customer_id))
-  const customers_paid_today  = paid_customer_ids.size
-  const customers_pending_today = customers.filter(
-    (c) => !paid_customer_ids.has(c.id)
-  ).length
-
-  const expected_today = customers.reduce((s, c) => s + c.daily_amount, 0)
+  const total_collected_today   = payments.reduce((s, p) => s + p.amount, 0)
+  const cash_today              = payments.filter((p) => p.method === 'cash').reduce((s, p) => s + p.amount, 0)
+  const upi_today               = payments.filter((p) => p.method === 'upi') .reduce((s, p) => s + p.amount, 0)
+  const paid_customer_ids       = new Set(payments.map((p) => p.customer_id))
+  const customers_paid_today    = paid_customer_ids.size
+  const customers_pending_today = customers.filter((c) => !paid_customer_ids.has(c.id)).length
+  const expected_today          = customers.reduce((s, c) => s + c.daily_amount, 0)
 
   return {
     total_collected_today,
@@ -195,12 +182,9 @@ export async function fetchDashboardStats(date: string): Promise<DashboardStats>
 // ============================================================
 // MISSED PAYMENTS
 // ============================================================
-export async function fetchMissedPayments(
-  date: string
-): Promise<MissedPaymentCustomer[]> {
+export async function fetchMissedPayments(date: string): Promise<MissedPaymentCustomer[]> {
   const supabase = getSupabaseClient()
 
-  // All active customers
   const { data: customers, error: e1 } = await supabase
     .from('customers')
     .select('id, name, phone, daily_amount')
@@ -208,7 +192,6 @@ export async function fetchMissedPayments(
 
   if (e1) throw new Error(e1.message)
 
-  // Today's payments
   const { data: payments, error: e2 } = await supabase
     .from('payments')
     .select('customer_id, amount')
@@ -218,30 +201,15 @@ export async function fetchMissedPayments(
 
   const paymentMap = new Map<string, number>()
   for (const p of payments || []) {
-    const existing = paymentMap.get(p.customer_id) || 0
-    paymentMap.set(p.customer_id, existing + p.amount)
+    paymentMap.set(p.customer_id, (paymentMap.get(p.customer_id) || 0) + p.amount)
   }
 
   return (customers || []).map((c) => {
     const paid = paymentMap.get(c.id) || 0
-    let status: 'paid' | 'partial' | 'not_paid'
+    const status: 'paid' | 'partial' | 'not_paid' =
+      paid >= c.daily_amount ? 'paid' : paid > 0 ? 'partial' : 'not_paid'
 
-    if (paid >= c.daily_amount) {
-      status = 'paid'
-    } else if (paid > 0) {
-      status = 'partial'
-    } else {
-      status = 'not_paid'
-    }
-
-    return {
-      id: c.id,
-      name: c.name,
-      phone: c.phone,
-      daily_amount: c.daily_amount,
-      paid_today: paid,
-      status,
-    }
+    return { id: c.id, name: c.name, phone: c.phone, daily_amount: c.daily_amount, paid_today: paid, status }
   })
 }
 
