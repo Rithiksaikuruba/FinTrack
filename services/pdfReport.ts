@@ -1,26 +1,16 @@
 /**
  * generateDailyPDFReport.ts
  *
- * ⚠️  REQUIRED — update your Supabase fetch query to join customer_summary
- *     (the VIEW, not the raw customers table) so pending_amount is available.
+ * ⚠️  FOR CORRECT BALANCE: update your Supabase fetch to:
+ *     .from('payments').select('*, customers:customer_summary(*)')
  *
- *     Change your fetch from:
- *       .from('payments').select('*, customers(*)')
- *     To:
- *       .from('payments').select('*, customers:customer_summary(*)')
- *
- *     customer_summary view exposes: paid_amount, pending_amount, total_amount
- *     The raw customers table does NOT have paid_amount or pending_amount.
+ * Even if you haven't done that yet, this file now computes balance
+ * from whatever fields ARE available in the raw customers table.
  */
 
 import dayjs from 'dayjs'
 import type { PaymentWithCustomer } from '@/types'
 
-// ─────────────────────────────────────────────────────────────
-// jsPDF's built-in Helvetica cannot render ₹.
-// Amounts go in cells as plain numbers ("39,000.00").
-// Column headers say "Paid (Rs.)" / "Balance (Rs.)" to give context.
-// ─────────────────────────────────────────────────────────────
 function fmt(value: number): string {
   return Number(value).toLocaleString('en-IN', {
     minimumFractionDigits: 2,
@@ -32,27 +22,62 @@ function fmtBox(value: number): string {
   return `Rs. ${fmt(value)}`
 }
 
-// Pull pending_amount out of a customer record safely.
-// Works whether the query joins customer_summary (has pending_amount)
-// or the raw customers table (has total_amount; we compute manually).
-function getPending(customers: unknown): number {
-  if (!customers || typeof customers !== 'object') return 0
+/**
+ * Extracts the pending/balance amount from a customer record.
+ *
+ * Tries every possible field in order:
+ *  1. pending_amount       → from customer_summary VIEW  ✅ most accurate
+ *  2. total_amount - paid_amount → also from VIEW        ✅ accurate
+ *  3. total_amount alone   → from raw customers table    ⚠️  shows full loan, not remaining
+ *  4. loan_amount + interest → from raw customers table  ⚠️  same as above
+ *
+ * Logs what it finds so you can debug in the browser console.
+ */
+function getPending(customers: unknown, paymentAmount: number): number {
+  if (!customers || typeof customers !== 'object') {
+    console.warn('[PDF] customers field is null/undefined — balance will show 0')
+    return 0
+  }
+
   const c = customers as Record<string, unknown>
 
-  // ✅ Best path: customer_summary view provides pending_amount directly
-  const directPending = Number(c['pending_amount'])
-  if (!isNaN(directPending) && directPending > 0) return directPending
+  // Debug: log all available keys so you can see what Supabase returned
+  console.log('[PDF] customers fields available:', Object.keys(c))
+  console.log('[PDF] customers data:', JSON.stringify(c, null, 2))
 
-  // ✅ Fallback: compute from total_amount - paid_amount (also in the view)
-  const total  = Number(c['total_amount']  ?? 0)
-  const paid   = Number(c['paid_amount']   ?? 0)
-  if (total > 0) return Math.max(0, total - paid)
+  // 1. pending_amount from customer_summary view
+  const pendingAmount = Number(c['pending_amount'])
+  if (!isNaN(pendingAmount) && pendingAmount >= 0) {
+    console.log('[PDF] Using pending_amount:', pendingAmount)
+    return pendingAmount
+  }
 
-  // ⚠️  Last resort: loan_amount + interest - today's payment
-  // (only available from raw customers table, very inaccurate — fix your query!)
-  const loan     = Number(c['loan_amount'] ?? 0)
-  const interest = Number(c['interest']    ?? 0)
-  return Math.max(0, loan + interest)
+  // 2. total_amount - paid_amount (both from customer_summary view)
+  const totalAmount = Number(c['total_amount'])
+  const paidAmount  = Number(c['paid_amount'])
+  if (!isNaN(totalAmount) && totalAmount > 0 && !isNaN(paidAmount)) {
+    const computed = Math.max(0, totalAmount - paidAmount)
+    console.log('[PDF] Using total_amount - paid_amount:', computed)
+    return computed
+  }
+
+  // 3. total_amount alone (raw customers table has this)
+  if (!isNaN(totalAmount) && totalAmount > 0) {
+    console.log('[PDF] Using total_amount (no paid_amount available):', totalAmount)
+    return totalAmount
+  }
+
+  // 4. loan_amount + interest (raw customers table)
+  const loanAmount = Number(c['loan_amount'])
+  const interest   = Number(c['interest'])
+  if (!isNaN(loanAmount) && loanAmount > 0) {
+    const total = loanAmount + (isNaN(interest) ? 0 : interest)
+    console.log('[PDF] Using loan_amount + interest:', total)
+    return total
+  }
+
+  console.warn('[PDF] Could not compute balance — no usable fields found')
+  return 0
 }
 
 export async function generateDailyPDFReport(
@@ -63,15 +88,14 @@ export async function generateDailyPDFReport(
   const { jsPDF } = await import('jspdf')
 
   const doc       = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
-  const pageWidth = doc.internal.pageSize.getWidth()   // 210 mm
-  const pageH     = doc.internal.pageSize.getHeight()  // 297 mm
+  const pageWidth = doc.internal.pageSize.getWidth()
+  const pageH     = doc.internal.pageSize.getHeight()
   const ML        = 10
   const MR        = 10
-  const PRINT_W   = pageWidth - ML - MR               // 190 mm
+  const PRINT_W   = pageWidth - ML - MR  // 190 mm
 
   type RGB = [number, number, number]
 
-  // ── HELPERS ────────────────────────────────────────────────
   const fillRect = (x: number, y: number, w: number, h: number, rgb: RGB) => {
     doc.setFillColor(rgb[0], rgb[1], rgb[2])
     doc.rect(x, y, w, h, 'F')
@@ -87,13 +111,17 @@ export async function generateDailyPDFReport(
   const upiTotal   = payments.filter((p) => p.method === 'upi') .reduce((s, p) => s + Number(p.amount), 0)
   const grandTotal = cashTotal + upiTotal
 
-  // Total balance = sum of pending across all unique customers who paid today
+  // Log the raw first payment so you can see what's coming from Supabase
+  if (payments.length > 0) {
+    console.log('[PDF] First payment object:', JSON.stringify(payments[0], null, 2))
+  }
+
   const seenIds = new Set<string>()
   let totalPending = 0
   for (const p of payments) {
     if (!seenIds.has(p.customer_id)) {
       seenIds.add(p.customer_id)
-      totalPending += getPending(p.customers)
+      totalPending += getPending(p.customers, Number(p.amount))
     }
   }
 
@@ -124,7 +152,7 @@ export async function generateDailyPDFReport(
   const boxY = 53
   const boxH = 27
   const gap  = 3
-  const boxW = (PRINT_W - gap * 3) / 4   // ≈ 45.25 mm
+  const boxW = (PRINT_W - gap * 3) / 4
 
   const boxes = [
     { label: 'CASH COLLECTED',  value: fmtBox(cashTotal),    bg: [236, 253, 245] as RGB, fg: [4,   120, 87 ] as RGB },
@@ -137,13 +165,9 @@ export async function generateDailyPDFReport(
     const x = ML + i * (boxW + gap)
     roundRect(x, boxY, boxW, boxH, 3, box.bg)
     doc.setTextColor(box.fg[0], box.fg[1], box.fg[2])
-
-    // Label
     doc.setFontSize(6.5)
     doc.setFont('helvetica', 'bold')
     doc.text(box.label, x + boxW / 2, boxY + 8, { align: 'center' })
-
-    // Value — auto-shrink font if value is too wide for the box
     const maxBoxW = boxW - 4
     let fs = 11
     doc.setFont('helvetica', 'bold')
@@ -162,7 +186,6 @@ export async function generateDailyPDFReport(
   doc.text('Payment Details', ML, 91)
 
   // ── COLUMN CONFIG ─────────────────────────────────────────
-  // Widths must sum to PRINT_W = 190 mm
   // #(7) + Name(43) + Phone(27) + Paid(35) + Method(17) + Balance(35) + Notes(26) = 190 ✅
   const COL_W   = [7, 43, 27, 35, 17, 35, 26]
   const HEADERS = ['#', 'Customer Name', 'Phone', 'Paid (Rs.)', 'Method', 'Balance (Rs.)', 'Notes']
@@ -177,8 +200,7 @@ export async function generateDailyPDFReport(
   const ROW_H  = 8.5
   const HEAD_H = 10
   const PAD    = 2.5
-
-  let curY = 94
+  let curY     = 94
 
   // ── DRAW CELL ─────────────────────────────────────────────
   const drawCell = (
@@ -195,7 +217,6 @@ export async function generateDailyPDFReport(
       doc.setFillColor(opts.bgColor[0], opts.bgColor[1], opts.bgColor[2])
       doc.rect(x, y, w, h, 'F')
     }
-
     doc.setDrawColor(210, 215, 230)
     doc.setLineWidth(0.12)
     doc.rect(x, y, w, h, 'S')
@@ -215,12 +236,10 @@ export async function generateDailyPDFReport(
     doc.text(clipped, tx, y + h / 2 + 1.3, { align, baseline: 'middle' as const })
   }
 
-  // ── HEADER ROW ────────────────────────────────────────────
   const drawHeader = (y: number) => {
     HEADERS.forEach((h, col) =>
       drawCell(col, y, HEAD_H, h, {
-        bold:      true,
-        fontSize:  8.5,
+        bold: true, fontSize: 8.5,
         bgColor:   [79, 70, 229],
         textColor: [255, 255, 255],
       })
@@ -239,7 +258,7 @@ export async function generateDailyPDFReport(
       curY += HEAD_H
     }
 
-    const pending = getPending(p.customers)
+    const pending = getPending(p.customers, Number(p.amount))
     const isEven  = i % 2 === 1
     const rowBg: RGB = isEven ? [248, 250, 252] : [255, 255, 255]
 
@@ -247,9 +266,9 @@ export async function generateDailyPDFReport(
       String(i + 1),
       String(p.customers?.name  || 'Unknown'),
       String(p.customers?.phone || '-'),
-      fmt(Number(p.amount)),   // plain number — no Rs. prefix needed (header has it)
+      fmt(Number(p.amount)),
       p.method.toUpperCase(),
-      fmt(pending),            // plain number — no Rs. prefix
+      fmt(pending),
       String(p.notes || '-'),
     ]
 
@@ -275,14 +294,13 @@ export async function generateDailyPDFReport(
 
   ;['', '', 'GRAND TOTAL', fmt(grandTotal), '', '', ''].forEach((text, col) =>
     drawCell(col, curY, ROW_H + 2, text, {
-      bold:      true,
-      fontSize:  9,
+      bold: true, fontSize: 9,
       bgColor:   [238, 242, 255],
       textColor: [67, 56, 202],
     })
   )
 
-  // ── FOOTER (every page) ───────────────────────────────────
+  // ── FOOTER ────────────────────────────────────────────────
   const totalPages =
     (doc.internal as unknown as { getNumberOfPages: () => number }).getNumberOfPages()
 
