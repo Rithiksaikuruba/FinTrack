@@ -1,21 +1,6 @@
-/**
- * generateDailyPDFReport.ts
- *
- * USAGE:
- *   import { generateDailyPDFReport } from './generateDailyPDFReport'
- *   await generateDailyPDFReport(supabase, date, payments, 'My Business')
- *
- * NOTE: payments must be fetched via fetchPayments() from payments.ts
- * which now includes pending_amount, total_amount, paid_amount in the join.
- */
-
 import dayjs from 'dayjs'
-import type { SupabaseClient } from '@supabase/supabase-js'
 import type { PaymentWithCustomer } from '@/types'
 
-// ─────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────
 function fmt(value: number): string {
   return Number(value).toLocaleString('en-IN', {
     minimumFractionDigits: 2,
@@ -27,37 +12,23 @@ function fmtBox(value: number): string {
   return `Rs. ${fmt(value)}`
 }
 
-// ─────────────────────────────────────────────────────────────
-// Get pending balance for a payment's customer.
-// Reads directly from the already-joined customers data.
-// ─────────────────────────────────────────────────────────────
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getPending(p: PaymentWithCustomer): number {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const c = p.customers as any
   if (c == null) return 0
-
-  // Priority 1: pending_amount stored on customer row
   if (c.pending_amount != null) return Math.max(0, Number(c.pending_amount))
-
-  // Priority 2: compute from total_amount - paid_amount
   if (c.total_amount != null) {
     return Math.max(0, Number(c.total_amount) - Number(c.paid_amount ?? 0))
   }
-
   return 0
 }
 
-// ─────────────────────────────────────────────────────────────
-// Generate the PDF
-// ─────────────────────────────────────────────────────────────
+// NOTE: called as generateDailyPDFReport(date, payments, businessName?)
 export async function generateDailyPDFReport(
-  _supabase: SupabaseClient,   // kept for API compatibility, no longer needed
   date: string,
   payments: PaymentWithCustomer[],
   businessName: string = 'FinTrack Business'
 ) {
-  // Build balance map directly from joined data — no extra DB call needed
   const balances: Record<string, number> = {}
   for (const p of payments) {
     if (!(p.customer_id in balances)) {
@@ -65,7 +36,8 @@ export async function generateDailyPDFReport(
     }
   }
 
-  console.log('[PDF] balances from join:', JSON.stringify(balances))
+  console.log('[PDF] balances:', JSON.stringify(balances))
+  console.log('[PDF] payments[0].customers:', JSON.stringify(payments[0]?.customers))
 
   const { jsPDF } = await import('jspdf')
 
@@ -88,7 +60,6 @@ export async function generateDailyPDFReport(
     doc.roundedRect(x, y, w, h, r, r, 'F')
   }
 
-  // ── TOTALS ────────────────────────────────────────────────
   const cashTotal    = payments.filter((p) => p.method === 'cash').reduce((s, p) => s + Number(p.amount), 0)
   const upiTotal     = payments.filter((p) => p.method === 'upi') .reduce((s, p) => s + Number(p.amount), 0)
   const grandTotal   = cashTotal + upiTotal
